@@ -285,12 +285,6 @@ export function optimise(
   const verified = Object.entries(facts).filter(
     ([, v]) => v.confirmed && v.value && v.source,
   );
-  const factList = verified
-    .map(
-      ([k, v]) =>
-        `<li><strong>${escapeHtml(factLabels[k] || k)}:</strong> ${escapeHtml(v.value)}</li>`,
-    )
-    .join("");
   switch (feature) {
     case "title":
       before = p.title;
@@ -299,7 +293,7 @@ export function optimise(
         "Remove promotional supplier language; use British terminology. Model identifiers are retained unless you edit them.",
       );
       break;
-    case "seo":
+    case "seo": {
       before = p.seo;
       // Existing copy is editorial content, not a disposable template input.
       // Fill missing fields only; length warnings require a reviewed edit.
@@ -312,6 +306,7 @@ export function optimise(
         blockers.push("Needs manual review: insufficient page content for a useful summary.");
       reasons.push("Preserve existing metadata. Fill missing fields from this page's title and content only; review any extracted summary before publishing.");
       break;
+    }
     case "description":
       before = p.descriptionHtml;
       if (kind === "collection") {
@@ -404,16 +399,16 @@ export function optimise(
         answer: v.value,
       }));
       if (config.policies.source && config.policies.delivery)
-        (after as any[]).push({
+        (after as {question:string;answer:string}[]).push({
           question: "How long does UK delivery take?",
           answer: config.policies.delivery,
         });
       if (config.policies.source && config.policies.returns)
-        (after as any[]).push({
+        (after as {question:string;answer:string}[]).push({
           question: "Can I return it?",
           answer: config.policies.returns,
         });
-      if (!(after as any[]).length)
+      if (!(after as {question:string;answer:string}[]).length)
         blockers.push(
           "Confirm at least one specification or delivery/returns policy.",
         );
@@ -423,11 +418,12 @@ export function optimise(
       break;
     case "links":
       before = p.descriptionHtml;
-      after =
-        p.descriptionHtml +
-        (related.length
-          ? `<h2>Explore related kit</h2><ul>${related.map((r) => `<li><a href="${escapeHtml(r.url)}">${escapeHtml(r.title)}</a></li>`).join("")}</ul>`
-          : "");
+      {const $=load(p.descriptionHtml,{},false);
+      $('[data-rankpilot="related"]').remove();
+      // Unmarked legacy or editorial links count as existing links and are retained.
+      const links=new Set($('a[href]').map((_,el)=>$(el).attr('href')).get());
+      const missing=related.filter(r=>!links.has(r.url));
+      after=$.html()+(missing.length?`<section data-rankpilot="related"><h2>Explore related kit</h2><ul>${missing.map(r=>`<li><a href="${escapeHtml(r.url)}">${escapeHtml(r.title)}</a></li>`).join('')}</ul></section>`:'');}
       reasons.push(
         "Relevant links from the imported catalogue; electrical compatibility is not implied.",
       );

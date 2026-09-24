@@ -1,6 +1,6 @@
 import {it,expect,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({rows:vi.fn(),resources:vi.fn(),update:vi.fn()}));
-vi.mock('../app/db.server',()=>({default:{change:{findMany:mocks.rows,updateMany:mocks.update},resource:{findMany:mocks.resources}}}));
+const mocks=vi.hoisted(()=>({rows:vi.fn(),resources:vi.fn(),update:vi.fn().mockResolvedValue({count:1}),event:vi.fn()}));
+vi.mock('../app/db.server',()=>({default:{change:{findMany:mocks.rows,updateMany:mocks.update},resource:{findMany:mocks.resources},event:{create:mocks.event}}}));
 import {repairedTitle,repairPendingTitles} from '../app/core/proposal-repair.server';
 it('repairs the reported tent proposal without truncation or another AI request',()=>{
  expect(repairedTitle({title:'Wolfwise Pop-up Privacy Tent – Changing or Washing Shelter',description:'Existing reviewed summary'},'Wolfwise Pop-Up Privacy Tent')).toEqual({title:'Wolfwise Pop-Up Privacy Tent',description:'Existing reviewed summary'});

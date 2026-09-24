@@ -1,0 +1,156 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model Store {
+  id String @id
+  demo Boolean @default(false)
+  active Boolean @default(true)
+  domain String @default("https://vanlifeemporium.com")
+  settings String @default("{}")
+  credentials String @default("{}")
+  discoveries String @default("{}")
+  nextWeekly DateTime @default(now())
+  createdAt DateTime @default(now())
+}
+model Resource {
+  id String @id @default(cuid())
+  storeId String
+  remoteId String
+  kind String
+  title String
+  handle String
+  collection String @default("")
+  payload String
+  facts String @default("{}")
+  keyword String @default("")
+  updatedAt DateTime @updatedAt
+  @@unique([storeId, remoteId])
+  @@index([storeId, kind])
+}
+model Audit {
+  id String @id @default(cuid())
+  storeId String
+  score Int
+  aeoScore Int
+  resourceCount Int
+  issues String
+  coverage String
+  createdAt DateTime @default(now())
+  @@index([storeId, createdAt])
+}
+model Change {
+  id String @id @default(cuid())
+  storeId String
+  resourceId String
+  feature String
+  before String
+  after String
+  reasons String @default("[]")
+  blockers String @default("[]")
+  status String @default("pending")
+  error String?
+  approvedBy String?
+  appliedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([storeId, status])
+}
+model Job {
+  id String @id @default(cuid())
+  storeId String
+  kind String
+  payload String @default("{}")
+  dedup String @unique
+  status String @default("queued")
+  attempts Int @default(0)
+  runAt DateTime @default(now())
+  lockedAt DateTime?
+  error String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([status, runAt])
+}
+model Event {
+  id String @id @default(cuid())
+  storeId String
+  message String
+  detail String @default("{}")
+  createdAt DateTime @default(now())
+  @@index([storeId, createdAt])
+}
+model Observation {
+  id String @id @default(cuid())
+  storeId String
+  engine String
+  prompt String
+  model String
+  text String
+  citations String
+  competitors String
+  mentioned Boolean
+  cited Boolean
+  source String @default("API sample")
+  createdAt DateTime @default(now())
+  @@index([storeId, createdAt])
+}
+model Metric {
+  id String @id @default(cuid())
+  storeId String
+  provider String
+  period String
+  payload String
+  createdAt DateTime @default(now())
+  @@unique([storeId, provider, period])
+}
+model Report {
+  id String @id @default(cuid())
+  storeId String
+  markdown String
+  createdAt DateTime @default(now())
+  @@index([storeId, createdAt])
+}
+model WebhookReceipt {
+  id String @id
+  storeId String
+  createdAt DateTime @default(now())
+}
+
+model GenerationCache {
+  key String @id
+  storeId String
+  value String
+  createdAt DateTime @default(now())
+  @@index([storeId])
+}

@@ -23,6 +23,31 @@ COPY patches/job-revision.ts /app/app/core/job-revision.ts
 COPY patches/app.job-status.ts /app/app/routes/app.job-status.ts
 COPY patches/proposal-repair.server.ts /app/app/core/proposal-repair.server.ts
 COPY patches/proposal-repair.test.ts /app/tests/proposal-repair.test.ts
+COPY patches/release5/app/components/ChangeValues.tsx /app/app/components/ChangeValues.tsx
+COPY patches/release5/app/components/Connections.tsx /app/app/components/Connections.tsx
+COPY patches/release5/app/components/Download.tsx /app/app/components/Download.tsx
+COPY patches/release5/app/components/SectionHeading.tsx /app/app/components/SectionHeading.tsx
+COPY patches/release5/app/core/analytics.ts /app/app/core/analytics.ts
+COPY patches/release5/app/core/connections.ts /app/app/core/connections.ts
+COPY patches/release5/app/core/context.server.ts /app/app/core/context.server.ts
+COPY patches/release5/app/core/crawl.server.ts /app/app/core/crawl.server.ts
+COPY patches/release5/app/core/integrations.server.ts /app/app/core/integrations.server.ts
+COPY patches/release5/app/core/jobs.server.ts /app/app/core/jobs.server.ts
+COPY patches/release5/app/core/proposal-value.ts /app/app/core/proposal-value.ts
+COPY patches/release5/app/core/shopify-api.server.ts /app/app/core/shopify-api.server.ts
+COPY patches/release5/app/core/subsection-guide.ts /app/app/core/subsection-guide.ts
+COPY patches/release5/app/core/ui-data.server.ts /app/app/core/ui-data.server.ts
+COPY patches/release5/app/core/worker-health.server.ts /app/app/core/worker-health.server.ts
+COPY patches/release5/app/routes/app._index.tsx /app/app/routes/app._index.tsx
+COPY patches/release5/app/routes/app.resource.ts /app/app/routes/app.resource.ts
+COPY patches/release5/app/routes/webhooks.privacy.tsx /app/app/routes/webhooks.privacy.tsx
+COPY patches/release5/app/styles.css /app/app/styles.css
+COPY patches/release5/tests/audit-reproductions.test.ts /app/tests/audit-reproductions.test.ts
+COPY patches/release5/tests/content-safeguards.test.ts /app/tests/content-safeguards.test.ts
+COPY patches/release5/tests/core.test.ts /app/tests/core.test.ts
+COPY patches/release5/tests/release5-ui.test.ts /app/tests/release5-ui.test.ts
+COPY patches/release5/prisma/migrations/20260924220000_generation_cache/migration.sql /app/prisma/migrations/20260924220000_generation_cache/migration.sql
+COPY patches/release5/prisma/schema.prisma /app/prisma/schema.prisma
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite

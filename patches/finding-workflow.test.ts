@@ -1,7 +1,7 @@
 import {it,expect} from 'vitest';
 import {findingAction,findingKey,findingProgress,hasFaqSources} from '../app/core/finding-workflow';
 import {defaults,type Issue} from '../app/core/types';
-import {auditCatalogue} from '../app/core/catalogue';
+import {auditCatalogue,extractFacts} from '../app/core/catalogue';
 const issue:Issue={resourceId:'r',title:'Mug',code:'missing-product-faq',severity:'notice',detail:'FAQ needed',feature:'faq'};
 it('offers facts confirmation before unsupported FAQ generation',()=>{
  expect(findingAction(issue,{kind:'product',facts:'{}'},defaults).kind).toBe('facts');
@@ -30,11 +30,10 @@ it('does not force contact-page filler to meet a word target',()=>{
  expect(result.issues.some(i=>i.code==='thin-content')).toBe(false);
 });
 
-import {extractFacts} from '../app/core/catalogue';
 import {jobRevision} from '../app/core/job-revision';
 import {sectionGuide} from '../app/core/section-guide';
 it('extracts labelled facts without inventing or confirming information',()=>{
- const facts=extractFacts({descriptionHtml:'<table><tr><td>Material</td><td>Steel</td></tr></table><p>Care instructions: Wipe with a damp cloth.</p><ul><li>Package includes: One mug</li></ul><p>Lightweight and ideal for adventures.</p>'} as any);
+ const facts=extractFacts({descriptionHtml:'<table><tr><td>Material</td><td>Steel</td></tr></table><p>Care instructions: Wipe with a damp cloth.</p><ul><li>Package includes: One mug</li></ul><p>Lightweight and ideal for adventures.</p>'} as Parameters<typeof extractFacts>[0]);
  expect(facts.materials.value).toBe('Steel');expect(facts.care.value).toBe('Wipe with a damp cloth.');expect(facts.included.value).toBe('One mug');expect(facts.weight).toBeUndefined();
  expect(Object.values(facts).every(f=>!f.confirmed && f.source.includes('description'))).toBe(true);
 });

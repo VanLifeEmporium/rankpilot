@@ -14,7 +14,10 @@ export async function repairPendingTitles(storeId:string) {
   try {
    const after=repairedTitle(JSON.parse(row.after),String(JSON.parse(resource.payload).title||''));
    if(!after)continue;
-   await prisma.change.updateMany({where:{id:row.id,storeId,status:'pending',after:row.after},data:{after:JSON.stringify(after),error:null,reasons:JSON.stringify(['source-reviewed-v1: The existing Shopify page title is reused verbatim. The proposed meta description is unchanged.','Saved draft repaired to meet the five-word and 60-character title limits. Review before accepting; nothing has been published.'])}});
+   const reasons=JSON.parse(row.reasons || '[]');
+   const updated=await prisma.change.updateMany({where:{id:row.id,storeId,status:'pending',after:row.after},data:{after:JSON.stringify(after),error:null,reasons:JSON.stringify([...reasons,'Title repair: reused the existing page title. Description review status is unchanged.'])}});
+   if(updated.count) await prisma.event.create({data:{storeId,message:'Pending title repaired',detail:JSON.stringify({changeId:row.id,before:row.after,after:JSON.stringify(after),previousReasons:row.reasons})}});
+
   }catch{ /* Malformed proposals remain blocked for review. */ }
  }
 }

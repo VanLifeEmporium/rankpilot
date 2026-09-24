@@ -1,11 +1,12 @@
+vi.mock('../app/db.server',()=>({default:{store:{findUnique:async()=>({active:true})}}}));
 import {it,expect,vi,afterEach} from 'vitest';
 vi.mock('../app/core/security.server',()=>({credentials:async()=>({openaiKey:'test'})}));
 import {generateCopy,generateAlts,validateCopy} from '../app/core/generation.server';
 import {inlineImages,updateInlineAlts} from '../app/core/image-content';
-import {normalise,updateResource} from '../app/core/shopify-api.server';
+import {normalise,updateResource,type GraphQL} from '../app/core/shopify-api.server';
 import type {Payload} from '../app/core/types';
 const p:Payload={title:'Camping mug',handle:'camping-mug',descriptionHtml:'<p>A compact camping mug. Capacity 350 ml.</p>',seo:{title:'',description:''},images:[],collections:[]};
-const answer=(obj:any)=>new Response(JSON.stringify({status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify(obj)}]}]}),{status:200});
+const answer=(obj:unknown)=>new Response(JSON.stringify({status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify(obj)}]}]}),{status:200});
 const imagePayload:Payload={...p,images:[{id:'img',url:'https://cdn.shopify.com/test.jpg',alt:'',filename:'test.jpg'}]};
 it('repairs an overlong alt once and sends the length constraint to the provider',async()=>{
  const f=vi.fn().mockResolvedValueOnce(answer({alt:'x'.repeat(251),uncertain:false,reason:'Visible image'})).mockResolvedValueOnce(answer({alt:'A white mug on a wooden table.',uncertain:false,reason:'Visible image'}));
@@ -84,14 +85,14 @@ it('imports article featured and inline images separately',()=>{
  expect(value.images[1].id).toMatch(/^inline:/);
 });
 it('updates article featured alt through articleUpdate, not fileUpdate',async()=>{
- const calls:any[]=[];
- const client:any=async(query:string,options:any)=>{
+ const calls:{query:string;options:Parameters<GraphQL>[1]}[]=[];
+ const client:GraphQL=async(query,options)=>{
  calls.push({query,options});
  return new Response(JSON.stringify({data:query.startsWith('query Resource')?{node:{id:'gid://shopify/Article/1',title:'Story',handle:'story',body:'<p>Keep</p>',image:{id:'featured',url:'https://cdn.shopify.com/a.jpg',altText:''}}}:{articleUpdate:{article:{id:'gid://shopify/Article/1'},userErrors:[]}}}));
  };
  await updateResource(client,'gid://shopify/Article/1','article','alt',[{id:'featured',alt:'A campervan'}]);
  expect(calls[1].query).toContain('articleUpdate');
- expect(calls[1].options.variables.input).toEqual({image:{altText:'A campervan'}});
+ expect(calls[1].options?.variables?.input).toEqual({image:{altText:'A campervan'}});
 });
 it('rejects a description that removes an existing link',async()=>{
  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(answer(proposal)));
@@ -151,4 +152,12 @@ it('rejects a six-word SEO title even below the character limit',()=>{
 });
 it('accepts five-word titles with supported metadata',()=>{
  expect(()=>validateCopy('Capacity 350 ml.',{}, {...proposal,title:'One Two Three Four Five'},'seo')).not.toThrow();
+});
+it('keeps completed image descriptions when a later image fails, avoiding repeat charges',async()=>{
+ const cache=new Map<string,string>();const storage={get:async(id:string)=>cache.get(id)||null,set:async(id:string,_url:string,alt:string)=>{cache.set(id,alt);}};
+ const two={...imagePayload,images:[...imagePayload.images,{id:'second',url:'https://cdn.shopify.com/second.jpg',alt:'',filename:'second.jpg'}]};
+ const f=vi.fn().mockResolvedValueOnce(answer({alt:'A camping mug.',uncertain:false,reason:'Visible'})).mockResolvedValueOnce(new Response('{}',{status:429}));vi.stubGlobal('fetch',f);
+ await expect(generateAlts('s',two,storage)).rejects.toThrow('429');expect(cache.get('img')).toBe('A camping mug.');
+ f.mockResolvedValueOnce(answer({alt:'A storage basket.',uncertain:false,reason:'Visible'}));
+ const retried=await generateAlts('s',two,storage);expect(retried.after.map(i=>i.alt)).toEqual(['A camping mug.','A storage basket.']);expect(f).toHaveBeenCalledTimes(3);
 });

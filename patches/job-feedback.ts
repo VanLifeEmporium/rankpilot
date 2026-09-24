@@ -16,11 +16,11 @@ export function resultMessage(result:JobResult,changes:Change[]):string {
   return result.message || 'No result details available';
 }
 export function jobLabel(job:Job):string {
-  if(job.status==='completed' && job.kind==='optimise' && jobResults(job).some(r=>r.error)) return 'needs attention';
+  if(job.status==='completed' && jobResults(job).some(r=>r.error)) return 'needs attention';
   return job.status;
 }
 export function jobMessage(job:Job,changes:Change[]=[]):string {
-  if(job.error) return job.error;
+  if(job.error && !['queued','running'].includes(job.status)) return job.error;
   const name=job.kind==='audit'?'Audit':job.kind==='optimise'?'Generation':job.kind==='apply'?'Application':'Job';
   if(job.status!=='completed') {
     const payload=(()=>{try{return JSON.parse(job.payload);}catch{return {};}})();

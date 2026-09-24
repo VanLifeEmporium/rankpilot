@@ -1,3 +1,8 @@
+import {ChangeValues} from "./ChangeValues";
+import {Connections} from "./Connections";
+import {SectionHeading,Guidance} from "./SectionHeading";
+import {metricGuide} from "../core/subsection-guide";
+import {Download} from "./Download";
 import {jobRevision} from "../core/job-revision";
 import {sectionGuide} from "../core/section-guide";
 import {findingKey,findingAction,findingProgress} from "../core/finding-workflow";
@@ -50,8 +55,6 @@ const sectionNames:Record<string,string>={Dashboard:'Overview',Audit:'Find issue
 const sectionHelp:Record<string,string>={dashboard:'Start here. Run an audit, review proposed fixes and track verified updates.',audit:'Find issues → Generate fix → Review & apply. Generating does not publish.',reviews:'Compare each proposal, accept or reject it, and track whether Shopify was updated.',products:'Generate product titles, search snippets, descriptions and image alt text.',collections:'Improve collection copy and review redirects for retired collection URLs.',content:'Create and review unpublished blog drafts.',aeo:'Confirm product facts, prepare FAQs and measure AI mentions.',reports:'View performance and the history of changes applied to Shopify.',settings:'Manage connections and preferences. Autopilot remains off.'};
 const date = (s: string | Date) =>
   new Date(s).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-const show = (v: unknown) =>
-  typeof v === "string" ? v : JSON.stringify(v, null, 2);
 function Badge({
   children,
   tone = "neutral",
@@ -76,7 +79,7 @@ function Metric({
     <div className={"metric " + (accent ? "accent" : "")}>
       <div>{label}</div>
       <strong>{value}</strong>
-      <small>{caption}</small>
+      <small>{caption}</small><details className="metric-help"><summary>About this measure</summary><p>{metricGuide[label] || `${caption}. Use the related section below to inspect the records behind this value. Missing data means a check or connection is still needed.`}</p></details>
     </div>
   );
 }
@@ -106,7 +109,8 @@ export default function Workspace() {
   const d = useLoaderData<Data>();
   const section = useParams().section || "dashboard";
   const fetcher = useFetcher<{ ok: boolean; message: string; changeId?: string; jobId?: string; factResourceId?:string; factSuggestions?:Facts; keywordSuggestion?:string; factsSaved?:string }>();
-  const progress=useFetcher<{revision:string}>();
+  const progress=useFetcher<{revision:string;workerHealthy:boolean}>();
+  const resourceDetail=useFetcher<Data["resources"][number]>();
   const revalidator = useRevalidator();
   const formAction = useFormAction();
   const [collection, setCollection] = useState("All collections");
@@ -127,7 +131,7 @@ export default function Workspace() {
   const factsDialog = useRef<HTMLDialogElement>(null);
   useEffect(()=>{
     const result=fetcher.data;
-    if(result?.factsSaved===factId && result.ok) setFactId('');
+    if(result?.factsSaved===factId && result.ok) factsDialog.current?.close();
     if(result?.factResourceId!==factId || !result?.factSuggestions || !factsForm.current) return;
     let filled=0;
     for(const [key,fact] of Object.entries(result.factSuggestions)) {
@@ -137,8 +141,10 @@ export default function Workspace() {
     }
     const keyword=factsForm.current.elements.namedItem('keyword') as HTMLInputElement|null;
     if(keyword && !keyword.value.trim()) keyword.value=result.keywordSuggestion || '';
+    // This message describes the DOM fields filled from the completed server request.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFactMessage(filled ? `${filled} empty fields filled. Check the source and confirm only accurate facts. Nothing saved yet.` : 'No additional labelled specifications found. Your existing entries were kept. Add missing facts from a supplier source.');
-  },[fetcher.data]);
+  },[fetcher.data,factId]);
   const submit = (intent: string, extra: Record<string, string> = {}) =>
     fetcher.submit(
       { intent, ...extra },
@@ -148,14 +154,19 @@ export default function Workspace() {
     (j) => j.status === "queued" || j.status === "running",
   );
   const loadedRevision=jobRevision(d.jobs);
-  const pollRef=useRef(()=>{});
-  pollRef.current=()=>{if(progress.state==='idle' && document.visibilityState==='visible')progress.load('/app/job-status');};
-  useEffect(()=>{if(!running)return;const timer=setInterval(()=>pollRef.current(),5000);return()=>clearInterval(timer);},[running]);
-  useEffect(()=>{if(progress.data?.revision && progress.data.revision!==loadedRevision && revalidator.state==='idle') revalidator.revalidate();},[progress.data?.revision]);
-  useEffect(() => {
-    setSelected([]);
-    setQuery("");
-  }, [section]);
+  const refreshedRevision=useRef("");
+  const applying=d.jobs.some(j=>['apply','rollback'].includes(j.kind) && ['queued','running'].includes(j.status));
+  useEffect(()=>{
+    if(!running)return;
+    const timer=setInterval(()=>{if(progress.state==='idle' && document.visibilityState==='visible')progress.load('/app/job-status');},applying?500:2000);
+    return()=>clearInterval(timer);
+  },[running,applying,progress]);
+  useEffect(()=>{
+    const revision=progress.data?.revision;
+    if(!revision || revision===refreshedRevision.current)return;
+    if(revision===loadedRevision){refreshedRevision.current=revision;return;}
+    if(revalidator.state==='idle'){refreshedRevision.current=revision;void revalidator.revalidate();}
+  },[progress.data?.revision,loadedRevision,revalidator]);
   useEffect(() => {
     if (reviewId) dialog.current?.showModal();
     else dialog.current?.close();
@@ -190,7 +201,8 @@ export default function Workspace() {
   const pending = d.changes.filter((c) => c.status === "pending");
   const products = d.resources.filter((r) => r.kind === "product");
   const review = d.changes.find((c) => c.id === reviewId);
-  const factResource = d.resources.find((r) => r.id === factId);
+  const factResource = resourceDetail.data?.id===factId ? resourceDetail.data : d.resources.find((r) => r.id === factId);
+  useEffect(()=>{if(factId && resourceDetail.data?.id!==factId && resourceDetail.state==='idle')resourceDetail.load(`/app/resource?id=${encodeURIComponent(factId)}`);},[factId,resourceDetail]);
   const staleTitle = review && ["seo","title"].includes(review.feature) && (()=>{try{const after=JSON.parse(review.after);const title=String(review.feature === "seo" ? after.title || "" : after).trim();return !title || title.split(/\s+/u).length>5 || title.length>60;}catch{return true;}})();
   const reviewResource =
     review && d.resources.find((r) => r.id === review.resourceId);
@@ -222,15 +234,15 @@ export default function Workspace() {
   const gsc = newestMetrics("gsc");
   const ga = newestMetrics("ga4");
   const clicks = gsc[0]?.rows?.reduce(
-    (sum: number, r: any) => sum + r.clicks,
+    (sum: number, r: {clicks:number}) => sum + r.clicks,
     0,
   );
   const organic = ga[0]?.rows?.reduce(
-    (sum: number, r: any) => sum + Number(r.metricValues?.[0]?.value || 0),
+    (sum: number, r: {metricValues?:{value?:string}[]}) => sum + Number(r.metricValues?.[0]?.value || 0),
     0,
   );
   const revenue = ga[0]?.rows?.reduce(
-    (sum: number, r: any) => sum + Number(r.metricValues?.[1]?.value || 0),
+    (sum: number, r: {metricValues?:{value?:string}[]}) => sum + Number(r.metricValues?.[1]?.value || 0),
     0,
   );
   const mentionRate = d.observations.length
@@ -240,6 +252,7 @@ export default function Workspace() {
           100,
       )
     : null;
+  function historyPagination(){return <nav aria-label="Change history pages" className="connection-actions"><span>{d.historyCount} historical changes · page {d.historyPage+1}</span>{d.historyPage>0 && <Link to={`?historyPage=${d.historyPage-1}`}>Previous history</Link>}{(d.historyPage+1)*50<d.historyCount && <Link to={`?historyPage=${d.historyPage+1}`}>Older history</Link>}<small>All pending and failed changes remain visible.</small></nav>;}
   function changesTable(rows = pending) {
     return (
       <div className="table-wrap">
@@ -336,7 +349,7 @@ export default function Workspace() {
           <span className="spacer" />
           <Badge>{list.length} pages</Badge>
         </div>
-        <div className="bulk-bar">
+        <Guidance title="Catalogue selection"/><div className="bulk-bar">
           <span>{selected.length} selected</span>
           <select
             aria-label="Improvement type"
@@ -449,7 +462,7 @@ export default function Workspace() {
             </p>
           )}
         </div>
-        <s-section heading="Keyword opportunities">
+        <s-section heading="Keyword opportunities"><Guidance title="Keyword opportunities"/>
           <div className="cluster-grid">
             {Object.entries(clusters)
               .filter(
@@ -585,12 +598,13 @@ export default function Workspace() {
               {generationMessage}
             </div>
           )}
+          {running && progress.data?.workerHealthy===false && <p role="status" className="notice warning">Background processing is not responding. Accepted updates can still start here; queued generation needs the worker to recover. Avoid submitting the same work repeatedly.</p>}
           {busy && <p role="status" aria-live="polite">Submitting your request… Please wait; you do not need to click again.</p>}
           {sectionGuide[section] && <details className="card" style={{padding:'16px 20px',marginBottom:16}}><summary style={{cursor:'pointer',fontWeight:600}}>What is this section and how do I use it?</summary><p>{sectionGuide[section].shows}</p><ol>{sectionGuide[section].steps.map(step=><li key={step} style={{marginBottom:8}}>{step}</li>)}</ol></details>}
           <div className="card" style={{padding:'12px 20px',marginBottom:16,display:'flex',gap:20,flexWrap:'wrap'}} aria-label="Workflow shortcuts">
             <Link to="/app/audit">1. Find issues</Link><Link to="/app/reviews">2. Review & apply ({pending.length})</Link><Link to="/app/reviews">3. Check updates</Link>
           </div>
-          {section === "reviews" && <section className="card"><div className="card-head"><div><h2>Proposals and Shopify updates</h2><p>Accepted means queued. Applied means the saved Shopify value was verified. Open a change to see errors or retry.</p></div></div>{changesTable(d.changes)}</section>}
+          {section === "reviews" && <section className="card"><div className="card-head"><div><SectionHeading title="Proposals and Shopify updates"/><p>Accepted means queued. Applied means the saved Shopify value was verified. Open a change to see errors or retry.</p></div></div>{changesTable(d.changes)}{historyPagination()}</section>}
           {section === "dashboard" && (
             <>
               <div className="metrics-grid">
@@ -633,7 +647,7 @@ export default function Workspace() {
                   <div className="card-head">
                     <div>
                       <span className="eyebrow">YOUR NEXT MOVES</span>
-                      <h2>Make the useful details visible</h2>
+                      <SectionHeading title="Make the useful details visible"/>
                     </div>
                     <Badge>
                       {issues.filter((i) => i.severity !== "notice").length}{" "}
@@ -688,7 +702,7 @@ export default function Workspace() {
                         disabled={!productCount || busy}
                         onClick={() =>
                           optimise(
-                            products.map((p) => p.id),
+                            [...new Set(issues.filter(i=> item.feature==='alt' ? i.code==='missing-alt' : item.feature==='faq' ? i.code==='missing-product-faq' : ['thin-content','supplier-language'].includes(i.code)).map(i=>i.resourceId))],
                             item.feature,
                           )
                         }
@@ -699,7 +713,7 @@ export default function Workspace() {
                   ))}
                 </section>
                 <section className="card progress-card">
-                  <span className="eyebrow">REVIEW QUEUE</span>
+                  <SectionHeading title="Review queue"/>
                   <div className="queue-number">
                     {pending.length}
                     <span>
@@ -726,14 +740,14 @@ export default function Workspace() {
                   <div className="mini-stat">
                     <span>Applied improvements</span>
                     <strong>
-                      {d.changes.filter((c) => c.status === "applied").length}
+                      {d.appliedCount}
                     </strong>
                   </div>
                 </section>
               </div>
               <section className="card">
                 <div className="card-head">
-                  <h2>Ready for a closer look</h2>
+                  <SectionHeading title="Ready for a closer look"/>
                   <Link className="text-link" to="/app/audit">
                     View all improvements →
                   </Link>
@@ -742,7 +756,7 @@ export default function Workspace() {
               </section>
               <div className="two-cols">
                 <section className="card">
-                  <h2>Recent activity</h2>
+                  <SectionHeading title="Recent activity"/>
                   {d.events.slice(0, 5).map((e) => (
                     <div className="activity" key={e.id}>
                       <span className="activity-dot" />
@@ -757,7 +771,7 @@ export default function Workspace() {
                   )}
                 </section>
                 <section className="card">
-                  <h2>Connect the full picture</h2>
+                  <SectionHeading title="Connect the full picture"/>
                   <p className="muted">
                     Bring search queries, landing-page traffic and independent
                     AI samples into one workspace.
@@ -800,7 +814,7 @@ export default function Workspace() {
               </div>
               <section className="card">
                 <div className="card-head">
-                  <h2>Prioritised fix-it list</h2>
+                  <SectionHeading title="Prioritised fix-it list"/>
                   <input aria-label="Search findings" placeholder="Search page, issue or URL" value={issueQuery}
                     onChange={e => {setIssueQuery(e.target.value); setActiveIssue(null);}} />
                   <select aria-label="Filter finding type" value={issueCode}
@@ -888,11 +902,11 @@ export default function Workspace() {
                 </details>
               </section>
               <section className="card">
-                <h2>Approval queue</h2>
+                <SectionHeading title="Approval queue"/>
                 {changesTable()}
               </section>
               <section className="card">
-                <h2>Recent jobs</h2>
+                <SectionHeading title="Recent jobs"/>
                 {d.jobs.map((j) => (
                   <div className="job" key={j.id}>
                     <strong>{j.kind}</strong>
@@ -917,7 +931,7 @@ export default function Workspace() {
             <section className="card catalogue-card">
               {catalogue()}
               {section === "collections" && (
-                <s-section heading="Repair a collection redirect">
+                <s-section heading="Repair a collection redirect"><Guidance title="Repair a collection redirect"/>
                   <fetcher.Form method="post">
                     <input type="hidden" name="intent" value="redirect" />
                     <div className="form-grid">
@@ -933,7 +947,7 @@ export default function Workspace() {
                         Destination collection path
                         <select name="target" required defaultValue="">
                           <option value="" disabled>Choose a destination collection</option>
-                          {d.resources.filter((r:any) => r.kind === "collection").map((r:any) => <option key={r.id} value={`/collections/${r.handle}`}>{r.title}</option>)}
+                          {d.resources.filter((r) => r.kind === "collection").map((r) => <option key={r.id} value={`/collections/${r.handle}`}>{r.title}</option>)}
                         </select>
                       </label>
                     </div>
@@ -959,7 +973,7 @@ export default function Workspace() {
                 </span>
               </div>
               <section className="card">
-                <h2>Your content plan</h2>
+                <SectionHeading title="Your content plan"/>
                 <p className="muted">
                   Practical questions, useful answers and relevant links back to
                   the shop.
@@ -991,7 +1005,7 @@ export default function Workspace() {
                 ))}
               </section>
               <section className="card">
-                <h2>Pages & articles</h2>
+                <SectionHeading title="Pages & articles"/>
                 {d.resources
                   .filter((r) => ["article", "page"].includes(r.kind))
                   .map((r) => (
@@ -1062,11 +1076,9 @@ export default function Workspace() {
               </div>
               <div className="two-cols">
                 <section className="card">
-                  <h2>Schema without duplication</h2>
+                  <SectionHeading title="Schema without duplication"/>
                   <p>
-                    Enable the RankPilot app embed in Shopify’s theme editor. It
-                    checks existing JSON-LD and yields to the theme and
-                    Judge.me.
+                    The RankPilot theme embed avoids adding a second version of supported existing markup. It does not remove duplicates already produced by your theme or other apps.
                   </p>
                   <div className="check-list">
                     <p>
@@ -1085,7 +1097,7 @@ export default function Workspace() {
                     in the app embed settings. Existing Product and review
                     markup is preserved.
                   </p>
-                  {d.discoveries.schemas?.map((s: any) => (
+                  {d.discoveries.schemas?.map((s: {url:string;types:string[]}) => (
                     <p key={s.url}>
                       <small>{s.url}</small>
                       <span className="keyword">
@@ -1095,9 +1107,9 @@ export default function Workspace() {
                   ))}
                 </section>
                 <section className="card">
-                  <h2>AI crawler readiness</h2>
+                  <SectionHeading title="AI crawler readiness"/>
                   {d.discoveries.robots?.length ? (
-                    d.discoveries.robots.map((r: any) => (
+                    d.discoveries.robots.map((r: {agent:string;home:boolean;product:boolean}) => (
                       <div className="mini-stat" key={r.agent}>
                         <span>{r.agent}</span>
                         <Badge tone={r.home && r.product ? "green" : "amber"}>
@@ -1130,14 +1142,8 @@ export default function Workspace() {
               </div>
               <section className="card">
                 <div className="card-head">
-                  <h2>Store discovery file</h2>
-                  <Link
-                    className="button"
-                    reloadDocument
-                    to="/app/export?type=llms"
-                  >
-                    Download llms.txt draft
-                  </Link>
+                  <SectionHeading title="Store discovery file"/>
+                  <Download className="button" url="/app/export?type=llms">Download llms.txt draft</Download>
                 </div>
                 <p>
                   Check Shopify’s managed <code>/llms.txt</code> and{" "}
@@ -1156,7 +1162,7 @@ export default function Workspace() {
               <section className="card">
                 <div className="card-head">
                   <div>
-                    <h2>Independent answer-engine samples</h2>
+                    <SectionHeading title="Independent answer-engine samples"/>
                     <p className="muted">
                       Each run queries six UK buyer prompts per connected
                       provider. Provider API usage may be billed.
@@ -1269,7 +1275,7 @@ export default function Workspace() {
                 </details>
               </section>
               <section className="card">
-                <h2>Authority opportunities</h2>
+                <SectionHeading title="Authority opportunities"/>
                 <p className="muted">
                   Research candidates, not verified placements. Check relevance,
                   current contacts and community rules before approaching.
@@ -1332,7 +1338,7 @@ export default function Workspace() {
                 <Metric
                   label="Applied changes"
                   value={String(
-                    d.changes.filter((c) => c.status === "applied").length,
+                    d.appliedCount,
                   )}
                   caption="Full history with rollback"
                 />
@@ -1340,7 +1346,7 @@ export default function Workspace() {
               <div className="two-cols">
                 <section className="card">
                   <div className="card-head">
-                    <h2>Weekly reports</h2>
+                    <SectionHeading title="Weekly reports"/>
                     <Button onClick={() => submit("report")} disabled={busy}>
                       Generate report
                     </Button>
@@ -1348,13 +1354,7 @@ export default function Workspace() {
                   {d.reports.map((r) => (
                     <div className="mini-stat" key={r.id}>
                       <span>{date(r.createdAt)}</span>
-                      <Link
-                        className="text-link"
-                        reloadDocument
-                        to={`/app/export?id=${r.id}`}
-                      >
-                        Download report ↓
-                      </Link>
+                      <Download className="text-link" url={`/app/export?id=${r.id}`}>Download report ↓</Download>
                     </div>
                   ))}
                   {!d.reports.length && (
@@ -1365,7 +1365,7 @@ export default function Workspace() {
                   )}
                 </section>
                 <section className="card">
-                  <h2>Analytics connections</h2>
+                  <SectionHeading title="Analytics connections"/>
                   <p>
                     Compare consecutive 28-day periods, ending three days ago to
                     allow for reporting delays.
@@ -1384,7 +1384,7 @@ export default function Workspace() {
                 </section>
               </div>
               <section className="card">
-                <h2>Top-gaining pages</h2>
+                <SectionHeading title="Top-gaining pages"/>
                 {gsc.length ? (
                   <div className="table-wrap">
                     <table>
@@ -1432,7 +1432,7 @@ export default function Workspace() {
                 )}
               </section>
               <section className="card">
-                <h2>AI visibility over time</h2>
+                <SectionHeading title="AI visibility over time"/>
                 <div className="table-wrap">
                   <table>
                     <thead>
@@ -1466,7 +1466,7 @@ export default function Workspace() {
                 )}
               </section>
               <section className="card">
-                <h2>Connection activity</h2>
+                <SectionHeading title="Connection activity"/>
                 {d.events
                   .filter(
                     (e) =>
@@ -1486,8 +1486,8 @@ export default function Workspace() {
                 </p>
               </section>
               <section className="card">
-                <h2>Merchant feed completeness</h2>
-                {newestMetrics("merchant")[0]?.products?.map((p: any) => (
+                <SectionHeading title="Merchant feed completeness"/>
+                {newestMetrics("merchant")[0]?.products?.map((p: {name:string;title?:string;offerId:string;missing:string[]}) => (
                   <div className="mini-stat" key={p.name}>
                     <span>{p.title || p.offerId}</span>
                     <Badge tone={p.missing.length ? "amber" : "green"}>
@@ -1505,7 +1505,7 @@ export default function Workspace() {
                 )}
               </section>
               <section className="card">
-                <h2>Mobile template performance</h2>
+                <SectionHeading title="Mobile template performance"/>
                 <fetcher.Form method="post" className="inline-form">
                   <input type="hidden" name="intent" value="pagespeed" />
                   <input
@@ -1519,7 +1519,7 @@ export default function Workspace() {
                     Run PageSpeed check
                   </button>
                 </fetcher.Form>
-                {newestMetrics("pagespeed").map((m: any) => (
+                {newestMetrics("pagespeed").map((m: {url:string;score:number}) => (
                   <p key={m.url}>
                     {m.url}: performance {Math.round(m.score * 100)}/100. Lab
                     measurement; field data may be unavailable.
@@ -1528,16 +1528,10 @@ export default function Workspace() {
               </section>
               <section className="card">
                 <div className="card-head">
-                  <h2>Version history</h2>
-                  <Link
-                    className="text-link"
-                    reloadDocument
-                    to="/app/export?type=changes"
-                  >
-                    Export full history ↓
-                  </Link>
+                  <SectionHeading title="Version history"/>
+                  <Download className="text-link" url="/app/export?type=changes">Export full history ↓</Download>
                 </div>
-                {changesTable(d.changes)}
+                {changesTable(d.changes)}{historyPagination()}
               </section>
             </>
           )}
@@ -1546,7 +1540,7 @@ export default function Workspace() {
               <fetcher.Form method="post">
                 <input type="hidden" name="intent" value="settings" />
                 <section className="card">
-                  <h2>Automation, on your terms</h2>
+                  <SectionHeading title="Automation, on your terms"/>
                   <p className="muted">
                     Autopilot is locked off. Every proposed change requires your review. Blog articles are always unpublished drafts.
                   </p>
@@ -1575,15 +1569,14 @@ export default function Workspace() {
                   ))}
                 </section>
                 <section className="card">
-                  <h2>Reporting & monitoring</h2>
+                  <SectionHeading title="Reporting & monitoring"/>
                   <label className="check-row">
                     <input
                       type="checkbox"
                       name="weekly"
                       defaultChecked={d.settings.weekly}
                     />
-                    Run weekly audits, analytics refresh, AI sampling and a
-                    report
+                    Run weekly audits, analytics refresh and a report
                   </label>
                   <label className="check-row">
                     <input
@@ -1591,12 +1584,12 @@ export default function Workspace() {
                       name="requeue"
                       defaultChecked={d.settings.requeue}
                     />
-                    Re-queue pages with at least a 25% click drop, 100 prior
+                    Use API credits to regenerate pages with at least a 25% click drop, 100 prior
                     impressions and 10 prior clicks
                   </label>
                   <p className="muted">
                     A 28-day cooldown avoids repeatedly rewriting the same page.
-                    Weekly API calls may incur provider charges.
+                    Regenerated proposals still require acceptance. AI mention sampling runs only when you request it.
                   </p>
                   <div className="form-grid">
                     <label>
@@ -1628,22 +1621,14 @@ export default function Workspace() {
                       />
                     </label>
                     <label>
-                      Shopify blog ID
-                      <input
-                        name="blogId"
-                        placeholder="gid://shopify/Blog/…"
-                        defaultValue={d.settings.blogId}
-                      />
+                      Blog for new drafts
+                      <select name="blogId" defaultValue={d.settings.blogId}><option value="">Choose a blog</option>{d.settings.blogId && !d.discoveries.blogs?.some((b: {id:string})=>b.id===d.settings.blogId) && <option value={d.settings.blogId}>Previously selected blog</option>}{d.discoveries.blogs?.map((b:{id:string;title:string})=><option key={b.id} value={b.id}>{b.title}</option>)}</select><small>Run an audit to load your blogs. New articles are saved as unpublished drafts.</small>
                     </label>
                   </div>
-                  {d.discoveries.blogs?.map((b: any) => (
-                    <small key={b.id}>
-                      {b.title}: {b.id}
-                    </small>
-                  ))}
+                  
                 </section>
                 <section className="card">
-                  <h2>Verified delivery & returns wording</h2>
+                  <SectionHeading title="Verified delivery & returns wording"/>
                   <p className="muted">
                     Use wording that applies to every relevant supplier and
                     product. Leave blank when delivery times vary.
@@ -1676,103 +1661,14 @@ export default function Workspace() {
                 </button>
               </fetcher.Form>
               <section className="card">
-                <h2>Secure connections</h2>
-                <div className="integration-pills">
-                  {[
-                    "Google",
-                    "Bing",
-                    "PageSpeed",
-                    "OpenAI",
-                    "Perplexity",
-                    "Gemini",
-                  ].map((name) => (
-                    <span key={name}>
-                      {name} ·{" "}
-                      {d.credentialNames.some((k) =>
-                        k.toLowerCase().startsWith(name.toLowerCase()),
-                      )
-                        ? "Configured"
-                        : "Not connected"}
-                    </span>
-                  ))}
-                </div>
-                <p>
-                  Keys are encrypted on the server and are never returned to the
-                  browser. A configured key still needs a successful API request
-                  to verify access.
-                </p>
-                {d.demo ? (
-                  <div className="notice">
-                    Real credentials are disabled in demo mode. Follow the
-                    installation guide in the source package to run a live
-                    instance.
-                  </div>
-                ) : (
-                  <fetcher.Form method="post">
-                    <input type="hidden" name="intent" value="credentials" />
-                    <label>
-                      Credential update (JSON)
-                      <textarea
-                        name="credentials"
-                        rows={7}
-                        placeholder={
-                          '{"openaiKey":"…","googleServiceAccount":"{…}"}'
-                        }
-                        required
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                    </label>
-                    <p className="muted">
-                      Accepted keys: googleServiceAccount, googleClientId,
-                      googleClientSecret, googleRefreshToken, bingKey,
-                      pagespeedKey, openaiKey, openaiModel, perplexityKey,
-                      perplexityModel, geminiKey, geminiModel. Empty values
-                      remove a key.
-                    </p>
-                    <button className="button primary">
-                      Encrypt and save credentials
-                    </button>
-                  </fetcher.Form>
-                )}
+                <SectionHeading title="Secure connections"/>
+                <p>Connect only the services you need. Your keys are encrypted and never displayed after saving.</p>
+                {d.demo && <p className="notice">Connections are disabled in the demonstration workspace.</p>}
+                <Connections names={d.credentialNames} demo={d.demo}/>
               </section>
               <section className="card">
-                <h2>Installation checklist</h2>
-                <ol className="install-list">
-                  <li>
-                    Create RankPilot in the Shopify Dev Dashboard and select
-                    custom distribution for your store.
-                  </li>
-                  <li>
-                    Set the app URL, OAuth redirect URLs and environment secrets
-                    on an HTTPS Node host.
-                  </li>
-                  <li>
-                    Link and deploy the app configuration with Shopify CLI.
-                    Install it in Van Life Emporium.
-                  </li>
-                  <li>
-                    Enable the RankPilot theme app embed. Verify any shipping
-                    and returns values before enabling their schema.
-                  </li>
-                  <li>
-                    Connect read-only analytics and the AI APIs you want to
-                    sample. Run the first live audit and review the results.
-                  </li>
-                </ol>
-                <p className="muted">
-                  The downloadable source package includes exact commands,
-                  credentials, tests and deployment notes.
-                </p>
-                <p>
-                  FAQ metafield namespace:{" "}
-                  <code>
-                    {d.resources
-                      .map((r) => JSON.parse(r.payload).faqNamespace)
-                      .find(Boolean) ||
-                      "Apply your first FAQ and run a fresh audit to retrieve the namespace."}
-                  </code>
-                </p>
+                <SectionHeading title="Installation checklist"/>
+                <ol className="install-list"><li>Run a store audit to import your pages and find issues.</li><li>Connect OpenAI if you want copy or image descriptions generated. Measurement connections are optional.</li><li>Generate one preview, review it and accept it. Wait for Applied and verified before considering the update complete.</li><li>For FAQs on the storefront, enable the RankPilot embed in your Shopify theme editor and check a product page.</li></ol>
               </section>
             </>
           )}
@@ -1802,6 +1698,7 @@ export default function Workspace() {
         </div>
         {review && (
           <>
+            <Guidance title="Change preview"/>
             <div className="preview-meta">
               <Badge>{labels[review.feature]}</Badge>
               <Badge>{review.status}</Badge>
@@ -1810,12 +1707,13 @@ export default function Workspace() {
             {staleTitle && review.status === "pending" && <div className="notice warning"><p>This saved proposal exceeds the current five-word title limit. It cannot be applied. Generate a replacement to review.</p><Button disabled={busy} onClick={()=>{optimise([review.resourceId],review.feature,true);setReviewId("");}}>Generate shorter replacement</Button></div>}
             {JSON.parse(review.blockers).length > 0 && (
               <div className="notice warning">
-                <strong>Confirm these details first</strong>
+                <strong>This proposal needs attention</strong>
                 <ul>
                   {JSON.parse(review.blockers).map((b: string) => (
                     <li key={b}>{b}</li>
                   ))}
                 </ul>
+                {review.status === "pending" && <Button disabled={busy} onClick={() => {optimise([review.resourceId],review.feature,true);setReviewId("");}}>Generate replacement</Button>}
                 <Button
                   onClick={() => {
                     setFactId(review.resourceId);
@@ -1826,8 +1724,8 @@ export default function Workspace() {
                 </Button>
               </div>
             )}
-            {review.feature === "alt" && reviewPayload?.images?.map((img:any) => (
-              <figure key={img.id}><img src={img.url} alt={img.alt || "Image awaiting an alt description"} style={{maxWidth:240,maxHeight:180}} /><figcaption>{img.id}</figcaption></figure>
+            {review.feature === "alt" && reviewPayload?.images?.map((img:{id:string;url:string;alt:string}) => (
+              <figure key={img.id}><img src={img.url} alt={img.alt || "Image awaiting an alt description"} style={{maxWidth:240,maxHeight:180}} /><figcaption>Image on this page</figcaption></figure>
             ))}
             <div className="preview-tabs">
               <Button
@@ -1854,15 +1752,9 @@ export default function Workspace() {
                 }}
               />
             ) : (
-              <pre className={"diff " + previewTab}>
-                {show(
-                  JSON.parse(
-                    previewTab === "before" ? review.before : review.after,
-                  ),
-                )}
-              </pre>
+              <ChangeValues feature={review.feature} value={reviewValue}/>
             )}
-            <h3>Google snippet preview</h3>
+            <h3>Google snippet preview</h3><Guidance title="Google snippet preview"/>
             <div className="snippet">
               <div>Van Life Emporium</div>
               <small>
@@ -1961,7 +1853,7 @@ export default function Workspace() {
             key={factResource.id}
             ref={factsForm}
           >
-            <input
+            <Guidance title="Product facts"/><input
               type="hidden"
               name="intent"
               value={factResource.kind === "product" ? "facts" : "keyword"}
@@ -1978,13 +1870,13 @@ export default function Workspace() {
                   Confirm only what you have checked. Saving facts supersedes
                   pending copy previews so you can regenerate them.
                 </p>
-                <Button disabled={busy} onClick={()=>{setFactMessage("");submit("suggestFacts",{id:factResource.id});}}>Auto-populate empty fields & keyword</Button>
+                <Button disabled={busy || resourceDetail.state!=="idle"} onClick={()=>{setFactMessage("");submit("suggestFacts",{id:factResource.id});}}>Auto-populate empty fields & keyword</Button>
                 <p role="status">{busy ? "Working…" : factMessage}</p>
                 {fetcher.data?.ok===false && <p role="alert">{fetcher.data.message}</p>}
                 {Object.entries(factLabels).map(([k, label]) => {
                   const f: Facts = JSON.parse(factResource.facts);
                   return (
-                    <div className="fact-field" key={k}>
+                    <div className="fact-field" key={k}><details><summary>Why add {label.toLowerCase()}?</summary><p>This gives customers a specific answer about the product. Copy an accurate value from the description or supplier document, add its source and confirm only after checking. Leave it blank when unknown.</p></details>
                       <label>
                         {label}
                         <input name={k} defaultValue={f[k]?.value || ""} />
@@ -2010,7 +1902,7 @@ export default function Workspace() {
                 })}
                 <details>
                   <summary>Original product description</summary>
-                  <pre>{JSON.parse(factResource.payload).descriptionHtml}</pre>
+                  <p>{resourceDetail.state!=="idle"?"Loading original description…":JSON.parse(factResource.payload).descriptionHtml.replace(/<[^>]+>/g," ")}</p>
                 </details>
               </>
             )}

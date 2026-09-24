@@ -1,3 +1,6 @@
+import {displayResource,displayChange,jsonObject,jsonList} from "./ui-data.server";
+import {updateConnection,connection} from "./connections";
+import {visibleJobs} from './jobs.server';
 import {repairPendingTitles} from "./proposal-repair.server";
 import sanitizeHtml from "sanitize-html";
 import { data } from "react-router";
@@ -6,13 +9,14 @@ import prisma from "../db.server";
 import { context } from "./context.server";
 import { requireSameOrigin, encrypt, credentials } from "./security.server";
 import { features, settings } from "./types";
-import { enqueue, enqueueGeneration, approve, log, proposeRedirect, propose, refreshCatalogueAudit } from "./service.server";
+import { enqueue, enqueueGeneration, approve, log, proposeRedirect, tick, refreshCatalogueAudit, audit } from "./service.server";
 import { extractFacts, keywordFor } from "./catalogue";
-import { audit } from "./service.server";
 import { classifyAnswer } from "./integrations.server";
 export async function loadUI(request: Request) {
   const { store } = await context(request);
-  await repairPendingTitles(store.id);
+  const section=new URL(request.url).pathname.split("/").pop();
+  const historyPage=Math.max(0,Math.min(10000,Number(new URL(request.url).searchParams.get("historyPage"))||0));
+
   let audits = await prisma.audit.findMany({
     where: { storeId: store.id },
     orderBy: { createdAt: "desc" },
@@ -35,20 +39,18 @@ export async function loadUI(request: Request) {
     metrics,
     reports,
     keys,
+    appliedCount,
+    historyCount,
   ] = await Promise.all([
     prisma.resource.findMany({
       where: { storeId: store.id },
       orderBy: { title: "asc" },
     }),
-    prisma.change.findMany({
-      where: { storeId: store.id },
-      orderBy: { createdAt: "desc" },
-    }),
-    prisma.job.findMany({
-      where: { storeId: store.id },
-      orderBy: { createdAt: "desc" },
-      take: 1000,
-    }),
+    Promise.all([
+      prisma.change.findMany({where:{storeId:store.id,status:{in:['pending','approved','applying','rolling_back','apply_failed','verification_failed','rollback_failed','conflict']}},orderBy:{createdAt:'desc'}}),
+      prisma.change.findMany({where:{storeId:store.id,status:{in:['applied','rolled_back','rejected','superseded']}},orderBy:{createdAt:'desc'},skip:historyPage*50,take:50}),
+    ]).then(groups=>groups.flat()),
+    visibleJobs(store.id),
     prisma.event.findMany({
       where: { storeId: store.id },
       orderBy: { createdAt: "desc" },
@@ -59,27 +61,27 @@ export async function loadUI(request: Request) {
       orderBy: { createdAt: "desc" },
       take: 300,
     }),
-    prisma.metric.findMany({
-      where: { storeId: store.id },
-      orderBy: { period: "desc" },
-    }),
+    Promise.all(['gsc','ga4','merchant','bing','pagespeed'].map(provider=>prisma.metric.findMany({where:{storeId:store.id,provider},orderBy:{period:'desc'},take:12}))).then(groups=>groups.flat()),
     prisma.report.findMany({
       where: { storeId: store.id },
       orderBy: { createdAt: "desc" },
       take: 10,
     }),
     credentials(store.id),
+    prisma.change.count({where:{storeId:store.id,status:"applied"}}),
+    prisma.change.count({where:{storeId:store.id,status:{in:["applied","rolled_back","rejected","superseded"]}}}),
   ]);
   return {
     demo: store.demo,
     domain: store.domain,
     settings: {...settings(store.settings), autopilot: Object.fromEntries(features.map(k => [k, false]))},
-    discoveries: JSON.parse(store.discoveries),
-    resources,
-    changes: changes.map((c) => ({
+    discoveries: JSON.parse(JSON.stringify(jsonObject(store.discoveries))),
+    resources: resources.map(r=>displayResource(r,section==="content" && ["article","page"].includes(r.kind))),
+    appliedCount, historyCount, historyPage,
+    changes: changes.map(displayChange).map((c) => ({
       ...c,
       beforeHtml: ["description", "links"].includes(c.feature)
-        ? sanitizeHtml(JSON.parse(c.before), {
+        ? sanitizeHtml(typeof JSON.parse(c.before)==="string"?JSON.parse(c.before):"", {
             allowedTags: [
               "p",
               "h2",
@@ -100,7 +102,7 @@ export async function loadUI(request: Request) {
           })
         : null,
       afterHtml: ["description", "links"].includes(c.feature)
-        ? sanitizeHtml(JSON.parse(c.after), {
+        ? sanitizeHtml(typeof JSON.parse(c.after)==="string"?JSON.parse(c.after):"", {
             allowedTags: [
               "p",
               "h2",
@@ -126,7 +128,7 @@ export async function loadUI(request: Request) {
     observations,
     metrics,
     reports,
-    audits,
+    audits:audits.map(a=>({...a,issues:JSON.stringify(jsonList(a.issues)),coverage:JSON.stringify(jsonObject(a.coverage))})),
     credentialNames: Object.keys(keys).filter((k) => Boolean(keys[k])),
   };
 }
@@ -158,9 +160,10 @@ export async function actionUI(request: Request) {
       }
       case "analytics":
       case "visibility":
-      case "report":
-        await enqueue(store.id, intent);
-        break;
+      case "report": {
+        const job=await enqueue(store.id,intent);
+        return data({ok:true,jobId:job.id,message:'Started. Progress and any errors will appear here.'});
+      }
       case "pagespeed":
         await enqueue(store.id, "pagespeed", {
           url: z.string().url().parse(value("url")),
@@ -191,13 +194,23 @@ export async function actionUI(request: Request) {
         const job = await enqueueGeneration(store.id, ids, feature, value('regenerate')==='true');
         return data({ok:true,jobId:job.id,message:job.status==='completed' ? 'Existing generation result retrieved. Review the outcome before generating again.' : 'Generation queued. Nothing is published until you accept a preview.'});
       }
-      case "redirect":
-        await proposeRedirect(store.id, value("path"), value("target"));
-        break;
+      case "redirect": {
+        const change=await proposeRedirect(store.id,value('path'),value('target'));
+        return data({ok:true,changeId:change.id,message:'Redirect ready to review. Nothing published.'});
+      }
+      case 'repairTitle':
+        await repairPendingTitles(store.id);
+        return data({ok:true,message:'Saved titles checked. Review the proposal before accepting.'});
       case "approve": {
         await approve(store.id, value("id"), actor);
         const job=await prisma.job.findUnique({where:{dedup:`${store.id}:apply:${value('id')}`}});
-        return data({ok:true,jobId:job?.id,message:"Accepted. Applying and verifying the change in Shopify."});
+        if(job){
+          let timer:ReturnType<typeof setTimeout>|undefined;
+          await Promise.race([tick({jobId:job.id}),new Promise(resolve=>{timer=setTimeout(resolve,4200);})]).finally(()=>{if(timer)clearTimeout(timer);});
+          const result=await prisma.change.findFirstOrThrow({where:{id:value('id'),storeId:store.id}});
+          return data({ok:!['apply_failed','verification_failed','conflict'].includes(result.status),jobId:job.id,message:result.status==='applied'?'Applied and verified in Shopify.':result.error || 'Shopify is still processing this update. We will verify it automatically; you can keep working.'});
+        }
+        return data({ok:true,message:'Accepted. Applying and verifying in Shopify.'});
       }
       case "reject": {
         const updated = await prisma.change.updateMany({
@@ -225,7 +238,7 @@ export async function actionUI(request: Request) {
         if(j.kind==='rollback') await prisma.change.updateMany({where:{id:JSON.parse(j.payload).changeId,storeId:store.id,status:{in:['rollback_failed','verification_failed']}},data:{status:'rolling_back',error:null}});
         await prisma.job.update({
           where: { id: j.id },
-          data: { status: "queued", attempts: 0, runAt: new Date() },
+          data: { status: "queued", attempts: 0, runAt: new Date(), error:null },
         });
         break;
       }
@@ -269,7 +282,7 @@ export async function actionUI(request: Request) {
             storeId: store.id,
             resourceId: r.id,
             status: "pending",
-            feature: { in: ["description", "faq", "seo"] },
+            feature: { in: ["description", "faq", "seo", "title"] },
           },
           data: { status: "superseded" },
         });
@@ -292,6 +305,7 @@ export async function actionUI(request: Request) {
       }
       case "settings": {
         const cfg = settings(store.settings);
+        const oldPolicies=JSON.stringify(cfg.policies);
         cfg.autopilot = Object.fromEntries(features.map(k => [k, false]));
         cfg.weekly = f.get("weekly") === "on";
         cfg.requeue = f.get("requeue") === "on";
@@ -322,11 +336,30 @@ export async function actionUI(request: Request) {
           where: { id: store.id },
           data: { settings: JSON.stringify(cfg) },
         });
+        if(oldPolicies!==JSON.stringify(cfg.policies)) await prisma.change.updateMany({where:{storeId:store.id,feature:'faq',status:'pending'},data:{status:'superseded',error:'Store policy changed. Generate an updated preview.'}});
         await log(store.id, "Settings updated", {
           actor,
           autopilot: cfg.autopilot,
         });
         break;
+      }
+      case 'connectionSave':
+      case 'connectionDisconnect':
+      case 'connectionTest': {
+        if(store.demo)throw new Error('Connections are disabled in the demonstration workspace.');
+        const provider=value('provider');const option=connection(provider);
+        const existing=await credentials(store.id);
+        if(intent==='connectionTest'){
+          if(provider!=='openai' || !existing.openaiKey)throw new Error('Save an OpenAI key before checking it.');
+          let response:Response;
+          try{response=await fetch('https://api.openai.com/v1/models',{headers:{Authorization:`Bearer ${existing.openaiKey}`},signal:AbortSignal.timeout(8000)});}catch{throw new Error('OpenAI did not respond in time. Your saved key has not changed. Try again later.');}
+          if(!response.ok)throw new Error(response.status===401?'OpenAI did not accept the saved key. Replace it and try again.':response.status===429?'OpenAI is limiting requests. Check your account limits and try again later.':'OpenAI could not check this key. Check its permissions in your OpenAI account.');
+          return data({ok:true,message:'OpenAI accepted the key. This check did not generate content; generation billing and model access are checked when you generate a preview.'});
+        }
+        const next=updateConnection(existing,provider,value('key'),value('model'),intent==='connectionDisconnect');
+        await prisma.store.update({where:{id:store.id},data:{credentials:encrypt(JSON.stringify(next))}});
+        await log(store.id,intent==='connectionDisconnect'?'Connection removed':'Connection saved',{provider,actor});
+        return data({ok:true,message:intent==='connectionDisconnect'?`${option.name} disconnected.`:`${option.name} saved securely. Use its feature to confirm access.`});
       }
       case "credentials": {
         if (store.demo)
@@ -359,9 +392,12 @@ export async function actionUI(request: Request) {
         });
         break;
       }
-      case "draft":
-        await enqueue(store.id, "draft", { title: value("title") });
-        break;
+      case "draft": {
+        if(!settings(store.settings).blogId && !store.demo)throw new Error('Choose a blog in Settings before creating a draft.');
+        const keys=await credentials(store.id);if(!keys.openaiKey)throw new Error('Connect OpenAI in Settings before creating a draft.');
+        const job=await enqueue(store.id,'draft',{title:value('title')});
+        return data({ok:true,jobId:job.id,message:'Preparing an unpublished draft. Progress will appear here.'});
+      }
       case "observation": {
         const engine = z
           .enum(["Google AI Overviews", "Copilot"])
@@ -406,7 +442,7 @@ export async function actionUI(request: Request) {
   } catch (e) {
     if (e instanceof Response) throw e;
     return data(
-      { ok: false, message: e instanceof Error ? e.message : "Action failed" },
+      { ok: false, message: e instanceof z.ZodError ? "Check the form and try again. Some values are missing, invalid or too long." : e instanceof Error ? e.message : "Action failed" },
       { status: 400 },
     );
   }

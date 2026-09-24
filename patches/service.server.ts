@@ -1,3 +1,6 @@
+import {z} from "zod";
+import type {Change} from "@prisma/client";
+import {validateProposalValue} from "./proposal-value";
 import {catalogueCodes} from "./finding-workflow";
 import { redirectAction } from "./redirects";
 import { generateCopy, generateAlts, generateArticle } from "./generation.server";
@@ -11,14 +14,12 @@ import {
   keywordFor,
   optimise,
   topics,
-  text,
 } from "./catalogue";
 import {
   type Payload,
   type Feature,
   type Facts,
   settings,
-  escapeHtml,
   slug,
 } from "./types";
 import {
@@ -62,9 +63,16 @@ export async function enqueue(
 export async function enqueueGeneration(storeId:string, ids:string[], feature:Feature, regenerate=false) {
  const resources=await prisma.resource.findMany({where:{storeId,id:{in:ids}},orderBy:{id:'asc'}});
  if(resources.length!==new Set(ids).size) throw new Error('Resource selection is invalid');
- const fingerprint=createHash('sha256').update(JSON.stringify({feature,resources:resources.map(r=>[r.id,r.payload,r.facts])})).digest('hex');
+ const store=await prisma.store.findUniqueOrThrow({where:{id:storeId}});
+ const policy=settings(store.settings).policies;
+ const fingerprint=createHash('sha256').update(JSON.stringify({version:5,feature,policy:feature==='faq'?policy:undefined,resources:resources.map(r=>[r.id,r.payload,r.facts])})).digest('hex');
  const job=await enqueue(storeId,'optimise',{ids:[...new Set(ids)],feature},fingerprint);
- if(regenerate && ['completed','failed'].includes(job.status)) {
+ const result=JSON.parse(job.payload).result;
+ const changeIds=Array.isArray(result)?result.map((r:{changeId?:string})=>r.changeId).filter((id):id is string=>Boolean(id)):[];
+ const existingChanges=changeIds.length?await prisma.change.findMany({where:{storeId,id:{in:changeIds}}}):[];
+ const obsolete=existingChanges.some(c=>['rejected','superseded','rolled_back','conflict'].includes(c.status)) || (changeIds.length>existingChanges.length);
+ const failedResult=Array.isArray(result) && result.some(r=>r && typeof r==='object' && typeof r.error==='string');
+ if((regenerate || obsolete || failedResult || job.status==='failed') && ['completed','failed'].includes(job.status)) {
   await prisma.job.updateMany({where:{id:job.id,status:{in:['completed','failed']}},data:{status:'queued',attempts:0,runAt:new Date(),error:null,payload:JSON.stringify({ids:[...new Set(ids)],feature})}});
   return prisma.job.findUniqueOrThrow({where:{id:job.id}});
  }
@@ -75,10 +83,10 @@ export async function refreshCatalogueAudit(storeId:string) {
  if(!latest) return;
  const resources=await prisma.resource.findMany({where:{storeId,kind:{in:['product','collection','page','article']}}});
  const checked=auditCatalogue(resources);
- const retained=JSON.parse(latest.issues).filter((i:any)=>!catalogueCodes.has(i.code));
+ const retained=JSON.parse(latest.issues).filter((i:{code:string})=>!catalogueCodes.has(i.code));
  await prisma.audit.update({where:{id:latest.id},data:{score:checked.score,aeoScore:checked.aeoScore,resourceCount:resources.length,issues:JSON.stringify([...checked.issues,...retained]),coverage:JSON.stringify({...JSON.parse(latest.coverage),catalogueRecheckedAt:new Date().toISOString()})}});
 }
-export function sameField(actual:any,expected:any):boolean {
+export function sameField(actual:unknown,expected:unknown):boolean {
  if(Array.isArray(actual) && Array.isArray(expected)) {
   if(actual.length!==expected.length)return false;
   if(expected.every(v=>v && typeof v==='object' && typeof v.id==='string'))
@@ -86,7 +94,7 @@ export function sameField(actual:any,expected:any):boolean {
   return actual.every((v,i)=>sameField(v,expected[i]));
  }
  if(actual && expected && typeof actual==='object' && typeof expected==='object') {
-  const keys=Object.keys(expected);return keys.length===Object.keys(actual).length && keys.every(k=>sameField(actual[k],expected[k]));
+  const keys=Object.keys(expected);return keys.length===Object.keys(actual).length && keys.every(k=>sameField((actual as Record<string,unknown>)[k],(expected as Record<string,unknown>)[k]));
  }
  return actual===expected;
 }
@@ -98,9 +106,13 @@ export async function clientFor(storeId: string): Promise<GraphQL | null> {
   if (store.demo) return null;
   const { unauthenticated } = await import("../shopify.server");
   const { admin } = await unauthenticated.admin(storeId);
-  return admin.graphql as GraphQL;
+  return async (query,options) => {
+    const active=await prisma.store.findUnique({where:{id:storeId},select:{active:true}});
+    if(!active?.active) throw new Error('Store is uninstalled; work cancelled');
+    return admin.graphql(query,options);
+  };
 }
-export function fieldValue(p: Payload, feature: string): any {
+export function fieldValue(p: Payload, feature: string) {
   switch (feature) {
     case "title":
       return p.title;
@@ -121,19 +133,22 @@ export function fieldValue(p: Payload, feature: string): any {
       throw new Error("Unknown feature");
   }
 }
-export function withField(p: Payload, feature: string, value: any): Payload {
-  const next = structuredClone(p);
-  if (feature === "description" || feature === "links")
-    next.descriptionHtml = value;
-  else if (feature === "faq") next.faqs = value;
-  else if (feature === "alt" || feature === "filename")
-    next.images = next.images.map((i) => ({
-      ...i,
-      ...value.find((v: any) => v.id === i.id),
-    }));
-  else (next as any)[feature] = value;
-  if (feature === "alt") next.descriptionHtml = updateInlineAlts(next.descriptionHtml, value);
-  return next;
+export function withField(p:Payload,feature:string,value:unknown):Payload {
+ const next=structuredClone(p);
+ if(['description','links'].includes(feature))next.descriptionHtml=z.string().parse(value);
+ else if(feature==='faq')next.faqs=z.array(z.object({question:z.string(),answer:z.string()})).parse(value);
+ else if(feature==='seo')next.seo=z.object({title:z.string(),description:z.string()}).parse(value);
+ else if(feature==='title')next.title=z.string().parse(value);
+ else if(feature==='handle')next.handle=z.string().parse(value);
+ else if(feature==='alt'){
+  const alts=z.array(z.object({id:z.string(),alt:z.string()})).parse(value);
+  next.images=next.images.map(i=>({...i,...alts.find(v=>v.id===i.id)}));
+  next.descriptionHtml=updateInlineAlts(next.descriptionHtml,alts);
+ }else if(feature==='filename'){
+  const files=z.array(z.object({id:z.string(),filename:z.string()})).parse(value);
+  next.images=next.images.map(i=>({...i,...files.find(v=>v.id===i.id)}));
+ }else throw new Error('Unknown field');
+ return next;
 }
 export async function sync(storeId: string, productId?: string) {
   const client = await clientFor(storeId);
@@ -158,7 +173,7 @@ export async function sync(storeId: string, productId?: string) {
       },
     });
   }
-  const kinds = productId
+  const kinds: ("products"|"collections"|"pages"|"articles")[] = productId
     ? ["products"]
     : ["products", "collections", "pages", "articles"];
   for (const plural of kinds) {
@@ -169,7 +184,7 @@ export async function sync(storeId: string, productId?: string) {
       await saveResource(storeId, productId, "product", p);
       continue;
     }
-    const nodes = await allNodes(client, plural as any);
+    const nodes = await allNodes(client, plural);
     for (const node of nodes) {
       if (kind === "product") await hydrateProduct(client, node);
       await saveResource(storeId, node.id, kind, normalise(node, kind));
@@ -247,7 +262,7 @@ export async function audit(storeId: string) {
     },
   });
   const result = auditCatalogue(resources);
-  let coverage: any = {
+  let coverage: Record<string,unknown> = {
     catalogue: resources.length,
     storefront: 0,
     externalLinks: "Not scanned",
@@ -325,7 +340,7 @@ export async function propose(
   });
   if (pending) {
     const reasons:string[]=JSON.parse(pending.reasons);
-    const outdated = ((feature === "seo" || feature === "title") && String(feature === "seo" ? JSON.parse(pending.after).title : JSON.parse(pending.after)).trim().split(/\s+/u).length > 5) || (["seo","description"].includes(feature) && !reasons.some(r=>r.startsWith("source-reviewed-v1:"))) || (feature === "alt" && !reasons.some(r=>r.startsWith("image-reviewed-v1:")));
+    const outdated = ((feature === "seo" || feature === "title") && ((t:string)=>!t || t.split(/\s+/u).length>5 || t.length>60)(String(feature === "seo" ? JSON.parse(pending.after).title : JSON.parse(pending.after)).trim())) || (["seo","description"].includes(feature) && !reasons.some(trustedSourceReview)) || (feature === "alt" && !reasons.some(r=>r.startsWith("image-reviewed-v1:")));
     if(pending.status !== "pending" || (!outdated && sameField(JSON.parse(pending.before),fieldValue(p,feature)))) return pending;
     await prisma.change.update({where:{id:pending.id},data:{status:"rejected",error:"Superseded by source-based generation"}});
   }
@@ -339,10 +354,13 @@ export async function propose(
     take: 3,
   });
   const proposal = feature === "title" && (cleanTitle(p.title).split(/\s+/u).length > 5 || cleanTitle(p.title).length>60)
-    ? await generateCopy(storeId,{...p,seo:{title:p.title,description:p.seo.description}},resource.kind,"seo",JSON.parse(resource.facts)).then(result=>({...result,before:p.title,after:result.after.title}))
+    ? await generateCopy(storeId,{...p,seo:{title:p.title,description:p.seo.description}},resource.kind,"seo",JSON.parse(resource.facts)).then(result=>({...result,before:p.title,after:(result.after as Payload["seo"]).title}))
     : feature === "description" || feature === "seo"
     ? await generateCopy(storeId, p, resource.kind, feature, JSON.parse(resource.facts))
-    : feature === "alt" ? await generateAlts(storeId, p) : optimise(
+    : feature === "alt" ? await generateAlts(storeId, p, {
+      get:async(id,url)=>{const key=createHash('sha256').update(JSON.stringify([storeId,id,url,'alt-v5'])).digest('hex');const row=await prisma.generationCache.findUnique({where:{key}});return row && Date.now()-row.createdAt.getTime()<30*86400000?row.value:null;},
+      set:async(id,url,value)=>{const key=createHash('sha256').update(JSON.stringify([storeId,id,url,'alt-v5'])).digest('hex');await prisma.generationCache.upsert({where:{key},create:{key,storeId,value},update:{value,createdAt:new Date()}});}
+    }) : optimise(
     p,
     resource.kind,
     feature,
@@ -371,15 +389,18 @@ export async function propose(
   // Approval-only while content and storefront remediation is being verified.
   return row;
 }
-export function assertSafeCopy(feature: string, before: any, after: any, reasons: string[] = []) {
-  if (["title","seo"].includes(feature)) { const title=String(feature === "seo" ? after?.title || "" : after || "").trim(); if(!title || title.split(/\s+/u).length>5 || title.length>60) throw new Error("Regenerate this proposal: titles must be at most five words and 60 characters."); }
+export const trustedSourceReview=(reason:string)=>reason.startsWith('source-reviewed-v1:') && !reason.startsWith('source-reviewed-v1: The existing Shopify page title');
+export function assertSafeCopy(feature: string, before: unknown, after: unknown, reasons: string[] = []) {
+  const invalid=validateProposalValue(feature,after);if(invalid)throw new Error(invalid);
+  const beforeMeta=before as Record<string,unknown>|null;const afterMeta=after as Record<string,unknown>|null;
+  if (["title","seo"].includes(feature)) { const title=String(feature === "seo" ? afterMeta?.title || "" : after || "").trim(); if(!title || title.split(/\s+/u).length>5 || title.length>60) throw new Error("Regenerate this proposal: titles must be at most five words and 60 characters."); }
   if (feature === "alt" && !reasons.some(r => r.startsWith("image-reviewed-v1:")))
     throw new Error("Regenerate this image proposal from the actual image before approval.");
-  if (reasons.some(r => r.startsWith("source-reviewed-v1:"))) return;
+  if (reasons.some(trustedSourceReview)) return;
   if (feature === "description")
     throw new Error("Description replacement is paused. Existing content is protected; reject this proposal.");
   if (feature === "seo" && ["title", "description"].some(key =>
-    String(before?.[key] || "").trim() && before[key] !== after?.[key]))
+    String(beforeMeta?.[key] || "").trim() && beforeMeta?.[key] !== afterMeta?.[key]))
     throw new Error("This proposal replaces existing metadata. Reject it and regenerate using the content safeguards.");
 }
 export async function approve(storeId: string, id: string, actor: string) {
@@ -390,6 +411,8 @@ export async function approve(storeId: string, id: string, actor: string) {
   if (JSON.parse(row.blockers).length)
     throw new Error("Resolve missing facts and regenerate this preview first");
   await prisma.$transaction(async (tx) => {
+    const other=await tx.change.findFirst({where:{storeId,resourceId:row.resourceId,id:{not:id},status:{in:['approved','applying','rolling_back']}}});
+    if(other)throw new Error('Another update is applying to this page. Wait for verification, then accept this preview.');
     const claimed = await tx.change.updateMany({
       where: { id, storeId, status: "pending" },
       data: { status: "approved", approvedBy: actor },
@@ -407,25 +430,24 @@ export async function approve(storeId: string, id: string, actor: string) {
   await log(storeId, "Change approved", { changeId: id, actor });
 }
 export function compatibleState(
-  actual: any,
-  before: any,
-  after: any,
+  actual: unknown,
+  before: unknown,
+  after: unknown,
   feature: string,
 ) {
   if (feature === "alt" || feature === "filename")
     return (
-      Array.isArray(actual) &&
+      Array.isArray(actual) && Array.isArray(before) && Array.isArray(after) &&
       actual.length === before.length &&
-      actual.every((item: any) =>
+      actual.every((item: {id:string}) =>
         [
-          before.find((v: any) => v.id === item.id),
-          after.find((v: any) => v.id === item.id),
-        ].some((v) => JSON.stringify(v) === JSON.stringify(item)),
+          before.find((v: {id:string}) => v.id === item.id),
+          after.find((v: {id:string}) => v.id === item.id),
+        ].some((v) => sameField(v,item)),
       )
     );
   return (
-    JSON.stringify(actual) === JSON.stringify(before) ||
-    JSON.stringify(actual) === JSON.stringify(after)
+    sameField(actual,before) || sameField(actual,after)
   );
 }
 export async function applyChange(
@@ -446,7 +468,7 @@ export async function applyChange(
   if (change.feature === "redirect")
     return applyRedirect(storeId, change, rollback);
   if (change.feature === "draft")
-    return rollbackDraft(storeId, change, rollback);
+    return rollback ? rollbackDraft(storeId, change, true) : applyDraft(storeId,change);
   const r = await prisma.resource.findFirstOrThrow({
     where: { id: change.resourceId, storeId },
   });
@@ -473,7 +495,7 @@ export async function applyChange(
     where: { id },
     data: { status: rollback ? "rolling_back" : "applying", error: null },
   });
-  if (JSON.stringify(actual) !== JSON.stringify(after) && client) {
+  if (!sameField(actual,after) && client) {
     // Shopify may already have a redirect at the destination of a rollback. Remove only an exact app-created inverse.
     if (change.feature === "handle" && rollback) {
       const path = `/${r.kind === "article" ? `blogs/${p.blogHandle}` : r.kind + "s"}/${after}`;
@@ -545,37 +567,9 @@ export async function createDraft(
   const saved = await prisma.resource.findUnique({where:{storeId_remoteId:{storeId,remoteId:`draft-${jobId}`}}});
   const body = jobPayload.draftBody || (saved && JSON.parse(saved.payload).descriptionHtml) || await generateArticle(storeId,title,relevant.map(r=>JSON.parse(r.payload)));
   if(job && !jobPayload.draftBody) await prisma.job.update({where:{id:job.id},data:{payload:JSON.stringify({...jobPayload,draftBody:body})}});
-  const client = await clientFor(storeId);
-  const draftHandle = slug(title) + "-" + jobId.slice(-6);
-  let remoteId = `draft-${jobId}`;
-  const cfg = settings(store.settings);
-  if (client) {
-    if (!cfg.blogId) throw new Error("Choose a Shopify blog ID in Settings");
-    const existing = await graphql(client, operations.draftLookup, {
-      query: `handle:${draftHandle}`,
-    });
-    const match = existing.articles.nodes.find(
-      (a: any) => a.handle === draftHandle,
-    );
-    if (match) {
-      if (match.body !== body || match.title !== title || match.isPublished)
-        throw new Error("Conflict: the recovered draft has been edited");
-      remoteId = match.id;
-    } else {
-      const d = await graphql(client, operations.draft, {
-        article: {
-          blogId: cfg.blogId,
-          handle: draftHandle,
-          title,
-          body,
-          isPublished: false,
-          author: { name: "Van Life Emporium" },
-          tags: ["RankPilot draft", "Manual verification required"],
-        },
-      });
-      remoteId = d.articleCreate.article.id;
-    }
-  }
+  const draftHandle=slug(title)+'-'+jobId.slice(-6);
+  const remoteId=`draft-${jobId}`;
+  const cfg=settings(store.settings);
   const payload: Payload = {
     title,
     handle: draftHandle,
@@ -587,31 +581,38 @@ export async function createDraft(
     blogId: cfg.blogId,
   };
   const resource = await saveResource(storeId, remoteId, "article", payload);
-  if (
-    !(await prisma.change.findFirst({
-      where: { storeId, resourceId: resource.id, feature: "draft" },
-    }))
-  )
-    await prisma.change.create({
-      data: {
-        storeId,
-        resourceId: resource.id,
-        feature: "draft",
-        before: "null",
-        after: JSON.stringify(payload),
-        status: "applied",
-        approvedBy: "Requested draft creation",
-        appliedAt: new Date(),
-        reasons: JSON.stringify([
-          "Saved as an unpublished article. Rollback deletes this draft only if nobody has edited or published it.",
-        ]),
-      },
-    });
-  await log(storeId, "Article saved as an unpublished draft", {
-    title,
-    remoteId,
-  });
+  let change=await prisma.change.findFirst({where:{storeId,resourceId:resource.id,feature:'draft'}});
+  if(!change)change=await prisma.change.create({data:{storeId,resourceId:resource.id,feature:'draft',before:'null',after:JSON.stringify(payload),status:'pending',reasons:JSON.stringify(['Reviewed against catalogue sources. Accept to create an unpublished Shopify article.'])}});
+  await log(storeId,'Article preview ready',{title,changeId:change.id});
+  return [{changeId:change.id,message:'Article preview ready. Accept it to save an unpublished draft in Shopify.'}];
 }
+async function applyDraft(storeId:string,change:{id:string;resourceId:string;after:string}) {
+ const resource=await prisma.resource.findFirstOrThrow({where:{id:change.resourceId,storeId}});
+ const proposal:Payload=JSON.parse(change.after);
+ const client=await clientFor(storeId);
+ await prisma.change.update({where:{id:change.id},data:{status:'applying',error:null}});
+ let remoteId=resource.remoteId;let actual=proposal;
+ if(client){
+  if(!proposal.blogId)throw new Error('Choose a blog in Settings and regenerate this draft.');
+  const existing=await graphql(client,operations.draftLookup,{query:`handle:${proposal.handle}`});
+  const match=existing.articles.nodes.find((a:{handle:string})=>a.handle===proposal.handle);
+  if(match){
+   if(match.body!==proposal.descriptionHtml || match.title!==proposal.title || match.isPublished)throw new Error('Conflict: an article already uses this draft address. No overwrite made.');
+   remoteId=match.id;
+  }else{
+   const created=await graphql(client,operations.draft,{article:{blogId:proposal.blogId,handle:proposal.handle,title:proposal.title,body:proposal.descriptionHtml,isPublished:false,author:{name:'Van Life Emporium'},tags:['RankPilot draft','Manual verification required']}});
+   remoteId=created.articleCreate.article.id;
+  }
+  actual=await fetchResource(client,remoteId,'article');
+  if(actual.title!==proposal.title || actual.descriptionHtml!==proposal.descriptionHtml || actual.handle!==proposal.handle || actual.published || actual.blogId!==proposal.blogId)throw new Error('Verification failed: the saved article does not match the accepted unpublished draft.');
+ }
+ await prisma.$transaction([
+  prisma.resource.update({where:{id:resource.id},data:{remoteId,payload:JSON.stringify(actual)}}),
+  prisma.change.update({where:{id:change.id},data:{status:'applied',appliedAt:new Date(),error:null}}),
+ ]);
+ await log(storeId,'Article saved and verified as unpublished',{changeId:change.id,title:proposal.title});
+}
+
 export function llmsText(
   domain: string,
   resources: { kind: string; title: string; handle: string }[],
@@ -638,11 +639,11 @@ export async function weeklyReport(storeId: string) {
     where: { storeId, createdAt: { gte: since } },
   });
   const metrics = await prisma.metric.findMany({ where: { storeId } });
-  const markdown = `# RankPilot weekly report\n\nWeek ending ${new Date().toLocaleDateString("en-GB")}\n\n## Changes\n${changes.length} approved changes applied.\n${changes.map((c) => `- ${c.feature}: ${c.status} (${c.id})`).join("\n")}\n\n## Visibility\nCatalogue SEO score: ${audits[0]?.score ?? "Not audited"}. Previous: ${audits[1]?.score ?? "No baseline"}.\nAI mention rate: ${observations.length ? Math.round((observations.filter((o) => o.mentioned).length / observations.length) * 100) + "% of " + observations.length + " samples" : "No observations"}. API samples are not consumer search rankings.\nAnalytics snapshots: ${metrics.length}. Changes in traffic do not establish causation.\n\n## Next priorities\n${
+  const markdown = `# RankPilot weekly report\n\nWeek ending ${new Date().toLocaleDateString("en-GB")}\n\n## Changes\n${changes.filter(c=>c.status==='applied').length} changes remain applied. ${changes.filter(c=>c.status==='rolled_back').length} changes were rolled back. ${changes.length} application events recorded this week.\n${changes.map((c) => `- ${c.feature}: ${c.status} (${c.id})`).join("\n")}\n\n## Visibility\nCatalogue SEO score: ${audits[0]?.score ?? "Not audited"}. Previous: ${audits[1]?.score ?? "No baseline"}.\nAI mention rate: ${observations.length ? Math.round((observations.filter((o) => o.mentioned).length / observations.length) * 100) + "% of " + observations.length + " samples" : "No observations"}. API samples are not consumer search rankings.\nAnalytics snapshots: ${metrics.length}. Changes in traffic do not establish causation.\n\n## Next priorities\n${
     audits[0]
       ? JSON.parse(audits[0].issues)
           .slice(0, 10)
-          .map((i: any) => `- ${i.title}: ${i.detail}`)
+          .map((i: {title:string;detail:string}) => `- ${i.title}: ${i.detail}`)
           .join("\n")
       : "Run the first audit."
   }\n`;
@@ -735,54 +736,41 @@ export async function executeJob(job: {
     case "rollback":
       return applyChange(job.storeId, p.changeId, true);
     case "webhook": {
-      const before = await prisma.resource.findUnique({
-        where: {
-          storeId_remoteId: { storeId: job.storeId, remoteId: p.productId },
-        },
-      });
+      // Supplier webhooks refresh source data only. Paid generation requires a merchant action.
       await sync(job.storeId, p.productId);
-      const r = await prisma.resource.findUnique({
-        where: {
-          storeId_remoteId: { storeId: job.storeId, remoteId: p.productId },
-        },
-      });
-      if (r && (!before || before.payload !== r.payload)) {
-        for (const f of ["seo", "description", "alt", "faq"] as Feature[])
-          await propose(job.storeId, r.id, f);
-      }
       return;
     }
     case "draft":
       return createDraft(job.storeId, p.title, job.id);
     case "analytics":
-      await collectAnalytics(job.storeId);
-      return requeueUnderperformers(job.storeId);
+      {
+      const errors=await collectAnalytics(job.storeId);
+      if(errors.length) return errors.map(error=>({error}));
+      await requeueUnderperformers(job.storeId);
+      return [{message:'Connected analytics refreshed.'}];
+      }
     case "visibility":
       return trackVisibility(job.storeId);
     case "pagespeed":
       return pageSpeed(job.storeId, p.url);
+    case "refresh-audit":
+      return refreshCatalogueAudit(job.storeId);
     case "report":
       return weeklyReport(job.storeId);
     default:
       throw new Error("Unknown job type");
   }
 }
-export async function tick() {
+export async function tick(options:{lane?:'apply'|'background';jobId?:string}={}) {
   const cutoff = new Date(Date.now() - 5 * 60000);
   await prisma.job.updateMany({
     where: { status: "running", lockedAt: { lt: cutoff } },
     data: { status: "queued", lockedAt: null },
   });
   await prisma.job.updateMany({where:{status:"queued",attempts:{gte:5}},data:{status:"failed",lockedAt:null,error:"Job stopped after repeated interruptions. Review completed results before retrying."}});
-  const priority = await prisma.job.findFirst({where:{status:"queued",runAt:{lte:new Date()},attempts:{lt:5},kind:{in:["apply","rollback"]}},orderBy:{createdAt:"asc"}});
-  const next = priority || await prisma.job.findFirst({
-    where: {
-      status: "queued",
-      runAt: { lte: new Date() },
-      attempts: { lt: 5 },
-    },
-    orderBy: { createdAt: "asc" },
-  });
+  const filter={status:'queued',runAt:{lte:new Date()},attempts:{lt:5},...(options.jobId?{id:options.jobId}:{}),...(options.lane?{kind:options.lane==='apply'?{in:['apply','rollback']}:{notIn:['apply','rollback']}}:{})};
+  const priority=options.lane==='background'?null:await prisma.job.findFirst({where:{...filter,kind:{in:['apply','rollback']}},orderBy:{createdAt:'asc'}});
+  const next=priority || await prisma.job.findFirst({where:filter,orderBy:{createdAt:'asc'}});
   if (!next) return false;
   const claimed = await prisma.job.updateMany({
     where: { id: next.id, status: "queued" },
@@ -804,22 +792,24 @@ export async function tick() {
     30000,
   );
   try {
+    const active=await prisma.store.findUnique({where:{id:next.storeId},select:{active:true}});
+    if(!active?.active) {await prisma.job.updateMany({where:{id:next.id,status:'running'},data:{status:'cancelled',lockedAt:null}});return true;}
     const result = await executeJob(next, true);
     const payload=JSON.parse((await prisma.job.findUniqueOrThrow({where:{id:next.id}})).payload);
     const unfinished=next.kind === "optimise" && Array.isArray(result) && result.length < payload.ids.length;
-    await prisma.job.update({
-      where: { id: next.id },
+    await prisma.job.updateMany({
+      where: { id: next.id, status:"running" },
       data: { status: unfinished ? "queued" : "completed", attempts:0, lockedAt: null, error: null, payload: JSON.stringify({...payload, result}) },
     });
   } catch (e) {
     const error = e instanceof Error ? e.message : "Job failed";
     const terminal =
-      next.attempts >= 3 || /Verification failed|Needs manual review/.test(error) ||
+      next.attempts >= 3 || ['draft','visibility'].includes(next.kind) || /Verification failed|Needs manual review/.test(error) ||
       /Conflict|Confirm|Select|Choose|Connect|requires|No AI|Only|longer|credentials/i.test(
         error,
       );
-    await prisma.job.update({
-      where: { id: next.id },
+    await prisma.job.updateMany({
+      where: { id: next.id, status:"running" },
       data: {
         status: terminal ? "failed" : "queued",
         lockedAt: null,
@@ -846,7 +836,7 @@ export async function schedule() {
   for (const s of stores) {
     const cfg = settings(s.settings);
     if (cfg.weekly) {
-      for (const kind of ["audit", "analytics", "visibility", "report"])
+      for (const kind of ["audit", "analytics", "report"])
         await enqueue(s.id, kind, {}, `${s.nextWeekly.toISOString()}`);
     }
     await prisma.store.update({
@@ -883,7 +873,7 @@ export async function proposeRedirect(
   if (client) {
     await verifyRedirectTarget(storeId, target);
     const result = await graphql(client, operations.redirectLookup, {query: `path:${path}`});
-    const existing = result.urlRedirects.nodes.find((r:any) => r.path === path);
+    const existing = result.urlRedirects.nodes.find((r:{path:string}) => r.path === path);
     if (existing) previous = {path:existing.path,target:existing.target};
     if (previous?.target === target) throw new Error("This redirect already points to the selected destination.");
   }
@@ -907,7 +897,11 @@ export async function proposeRedirect(
       status: { in: ["pending", "approved", "applying"] },
     },
   });
-  if (pending) return pending;
+  if (pending) {
+    if(sameField(JSON.parse(pending.after),{path,target})) return pending;
+    if(pending.status!=='pending') throw new Error('A redirect for this path is already being applied. Wait for it to finish before changing the destination.');
+    await prisma.change.updateMany({where:{id:pending.id,status:'pending'},data:{status:'superseded',error:'Replaced by a newer destination'}});
+  }
   return prisma.change.create({
     data: {
       storeId,
@@ -928,7 +922,7 @@ async function verifyRedirectTarget(storeId:string, target:string) {
   if (!response.ok || new URL(response.url).origin !== new URL(url).origin || new URL(response.url).pathname.replace(/\/$/,"") !== target.replace(/\/$/,""))
     throw new Error("Choose a live destination that does not redirect elsewhere.");
 }
-async function applyRedirect(storeId: string, change: any, rollback: boolean) {
+async function applyRedirect(storeId: string, change: Change, rollback: boolean) {
   const mapping = JSON.parse(change.after);
   const previous = JSON.parse(change.before);
   const expected = rollback ? mapping : previous;
@@ -943,7 +937,7 @@ async function applyRedirect(storeId: string, change: any, rollback: boolean) {
       query: `path:${mapping.path}`,
     });
     const existing = result.urlRedirects.nodes.find(
-      (r: any) => r.path === mapping.path,
+      (r:{path:string}) => r.path === mapping.path,
     );
     const action=redirectAction(existing || null,expected,desired);
     if (action !== 'none') {
@@ -953,7 +947,7 @@ async function applyRedirect(storeId: string, change: any, rollback: boolean) {
       else await graphql(client, operations.redirect, {input:desired});
     }
     const confirmed=await graphql(client,operations.redirectLookup,{query:`path:${mapping.path}`});
-    const saved=confirmed.urlRedirects.nodes.find((r:any)=>r.path===mapping.path);
+    const saved=confirmed.urlRedirects.nodes.find((r:{path:string})=>r.path===mapping.path);
     if(!sameField(saved ? {path:saved.path,target:saved.target} : null,desired)) {
       await prisma.change.update({where:{id:change.id},data:{status:'verification_failed',error:'Shopify did not return the accepted redirect mapping.'}});
       throw new Error('Verification failed: redirect mapping was not saved.');
@@ -975,7 +969,7 @@ async function applyRedirect(storeId: string, change: any, rollback: boolean) {
   );
 }
 
-async function rollbackDraft(storeId: string, change: any, rollback: boolean) {
+async function rollbackDraft(storeId: string, change: Change, rollback: boolean) {
   if (!rollback) return;
   const resource = await prisma.resource.findFirstOrThrow({
     where: { id: change.resourceId, storeId },
