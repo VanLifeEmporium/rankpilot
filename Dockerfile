@@ -21,6 +21,8 @@ COPY patches/app.tsx /app/app/routes/app.tsx
 COPY patches/section-guide.ts /app/app/core/section-guide.ts
 COPY patches/job-revision.ts /app/app/core/job-revision.ts
 COPY patches/app.job-status.ts /app/app/routes/app.job-status.ts
+COPY patches/proposal-repair.server.ts /app/app/core/proposal-repair.server.ts
+COPY patches/proposal-repair.test.ts /app/tests/proposal-repair.test.ts
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite

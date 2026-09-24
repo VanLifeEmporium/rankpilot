@@ -1,3 +1,4 @@
+import {repairPendingTitles} from "./proposal-repair.server";
 import sanitizeHtml from "sanitize-html";
 import { data } from "react-router";
 import { z } from "zod";
@@ -11,6 +12,7 @@ import { audit } from "./service.server";
 import { classifyAnswer } from "./integrations.server";
 export async function loadUI(request: Request) {
   const { store } = await context(request);
+  await repairPendingTitles(store.id);
   let audits = await prisma.audit.findMany({
     where: { storeId: store.id },
     orderBy: { createdAt: "desc" },

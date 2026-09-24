@@ -165,7 +165,7 @@ export default function Workspace() {
     else factsDialog.current?.close();
   }, [factId]);
   const requestedJob = d.jobs.find(j => j.id === fetcher.data?.jobId);
-  const jobResults: {changeId?:string;message?:string;error?:string}[] = requestedJob ? readJobResults(requestedJob) : [];
+  const jobResults: {changeId?:string;message?:string;error?:string}[] = requestedJob?.status === "completed" ? readJobResults(requestedJob) : [];
   const generatedChangeId = fetcher.data?.changeId || (jobResults.length === 1 ? jobResults[0]?.changeId : undefined);
   const generationMessage = requestedJob
     ? jobMessage(requestedJob, d.changes)
