@@ -3,6 +3,8 @@ RUN apt-get update && apt-get install -y openssl ca-certificates && rm -rf /var/
 WORKDIR /app
 COPY rankpilot-source.tar.gz /tmp/rankpilot-source.tar.gz
 RUN tar -xzf /tmp/rankpilot-source.tar.gz --strip-components=1 -C /app && rm /tmp/rankpilot-source.tar.gz
+COPY patches/generation.server.ts /app/app/core/generation.server.ts
+COPY patches/generation.test.ts /app/tests/generation.test.ts
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
