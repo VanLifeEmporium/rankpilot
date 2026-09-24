@@ -253,22 +253,11 @@ export function keywordFor(p: Payload, kind: string) {
   return `${cleanTitle(p.title).toLowerCase()}${/\bUK\b/.test(p.title) ? "" : " UK"}`;
 }
 export function extractFacts(p: Payload): Facts {
-  const f: Facts = {};
-  const $ = load(p.descriptionHtml);
-  $("tr").each((_, row) => {
-    const cells = $(row).find("th,td");
-    if (cells.length >= 2) {
-      const label = $(cells[0]).text().toLowerCase().trim();
-      const value = $(cells[1]).text().trim();
-      const k = Object.keys(factLabels).find((k) => label.includes(k));
-      if (k && value)
-        f[k] = {
-          value,
-          source: "Supplier product description (confirm accuracy)",
-          confirmed: false,
-        };
-    }
-  });
+  const f:Facts={}; const $=load(p.descriptionHtml);
+  const aliases:Record<string,string[]>={dimensions:['dimensions','size'],weight:['weight'],materials:['material','materials'],power:['power','power requirements','voltage'],compatibility:['compatibility','compatible with'],included:['included','what is included','package includes','contents'],care:['care','care notes','care instructions']};
+  const add=(label:string,value:string)=>{const normalized=label.toLowerCase().replace(/[:：]/g,'').trim();const key=Object.keys(aliases).find(k=>aliases[k].includes(normalized));if(key && value.trim() && value.length<=1000 && !f[key])f[key]={value:value.trim(),source:'Existing Shopify product description — '+label.trim(),confirmed:false};};
+  $('tr').each((_,row)=>{const cells=$(row).find('th,td');if(cells.length>=2)add($(cells[0]).text(),$(cells[1]).text());});
+  $('li,p').each((_,node)=>{const line=$(node).text().trim();const match=line.match(/^([^:：\n]{2,35})[:：]\s*(.+)$/s);if(match)add(match[1],match[2]);});
   return f;
 }
 export const factLabels: Record<string, string> = {

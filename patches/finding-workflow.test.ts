@@ -29,3 +29,23 @@ it('does not force contact-page filler to meet a word target',()=>{
  const result=auditCatalogue([{id:'r',title:'Contact',kind:'page',keyword:'',facts:'{}',payload:JSON.stringify({title:'Contact',handle:'contact',descriptionHtml:'<p>Contact our team.</p>',seo:{title:'Contact',description:'Contact Van Life Emporium.'},images:[],collections:[]})}]);
  expect(result.issues.some(i=>i.code==='thin-content')).toBe(false);
 });
+
+import {extractFacts} from '../app/core/catalogue';
+import {jobRevision} from '../app/core/job-revision';
+import {sectionGuide} from '../app/core/section-guide';
+it('extracts labelled facts without inventing or confirming information',()=>{
+ const facts=extractFacts({descriptionHtml:'<table><tr><td>Material</td><td>Steel</td></tr></table><p>Care instructions: Wipe with a damp cloth.</p><ul><li>Package includes: One mug</li></ul><p>Lightweight and ideal for adventures.</p>'} as any);
+ expect(facts.materials.value).toBe('Steel');expect(facts.care.value).toBe('Wipe with a damp cloth.');expect(facts.included.value).toBe('One mug');expect(facts.weight).toBeUndefined();
+ expect(Object.values(facts).every(f=>!f.confirmed && f.source.includes('description'))).toBe(true);
+});
+it('does not trigger catalogue refresh for unchanged job data or heartbeat',()=>{
+ const j={id:'j',status:'running',payload:JSON.stringify({ids:['r'],result:[]})};
+ expect(jobRevision([j])).toBe(jobRevision([{...j,payload:JSON.stringify({ids:['r'],result:[],heartbeat:4})}]));
+ expect(jobRevision([j])).not.toBe(jobRevision([{...j,status:'completed'}]));
+ expect(jobRevision([j])).not.toBe(jobRevision([{...j,payload:JSON.stringify({result:[{changeId:'c'}]})}]));
+});
+it('provides a purpose and instructions for every navigation section',()=>{
+ for(const section of ['dashboard','audit','reviews','products','collections','content','aeo','reports','settings']) {
+ expect(sectionGuide[section].shows.length).toBeGreaterThan(40);expect(sectionGuide[section].steps.length).toBeGreaterThanOrEqual(3);
+ }
+});

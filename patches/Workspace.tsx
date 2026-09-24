@@ -1,3 +1,5 @@
+import {jobRevision} from "../core/job-revision";
+import {sectionGuide} from "../core/section-guide";
 import {findingKey,findingAction,findingProgress} from "../core/finding-workflow";
 import {jobResults as readJobResults, jobMessage, jobLabel, resultMessage} from "../core/job-feedback";
 import { useEffect, useRef, useState } from "react";
@@ -103,7 +105,8 @@ function Button({
 export default function Workspace() {
   const d = useLoaderData<Data>();
   const section = useParams().section || "dashboard";
-  const fetcher = useFetcher<{ ok: boolean; message: string; changeId?: string; jobId?: string }>();
+  const fetcher = useFetcher<{ ok: boolean; message: string; changeId?: string; jobId?: string; factResourceId?:string; factSuggestions?:Facts; keywordSuggestion?:string; factsSaved?:string }>();
+  const progress=useFetcher<{revision:string}>();
   const revalidator = useRevalidator();
   const formAction = useFormAction();
   const [collection, setCollection] = useState("All collections");
@@ -119,7 +122,23 @@ export default function Workspace() {
   const [issueCode, setIssueCode] = useState("all");
   const [previewTab, setPreviewTab] = useState("after");
   const dialog = useRef<HTMLDialogElement>(null);
+  const factsForm = useRef<HTMLFormElement>(null);
+  const [factMessage,setFactMessage]=useState("");
   const factsDialog = useRef<HTMLDialogElement>(null);
+  useEffect(()=>{
+    const result=fetcher.data;
+    if(result?.factsSaved===factId && result.ok) setFactId('');
+    if(result?.factResourceId!==factId || !result?.factSuggestions || !factsForm.current) return;
+    let filled=0;
+    for(const [key,fact] of Object.entries(result.factSuggestions)) {
+      const value=factsForm.current.elements.namedItem(key) as HTMLInputElement|null;
+      const source=factsForm.current.elements.namedItem(key+'Source') as HTMLInputElement|null;
+      if(value && !value.value.trim()) {value.value=fact.value;if(source)source.value=fact.source;filled++;}
+    }
+    const keyword=factsForm.current.elements.namedItem('keyword') as HTMLInputElement|null;
+    if(keyword && !keyword.value.trim()) keyword.value=result.keywordSuggestion || '';
+    setFactMessage(filled ? `${filled} empty fields filled. Check the source and confirm only accurate facts. Nothing saved yet.` : 'No additional labelled specifications found. Your existing entries were kept. Add missing facts from a supplier source.');
+  },[fetcher.data]);
   const submit = (intent: string, extra: Record<string, string> = {}) =>
     fetcher.submit(
       { intent, ...extra },
@@ -128,11 +147,11 @@ export default function Workspace() {
   const running = d.jobs.some(
     (j) => j.status === "queued" || j.status === "running",
   );
-  useEffect(() => {
-    if (!running) return;
-    const t = setInterval(() => { if(document.visibilityState === "visible" && revalidator.state === "idle") revalidator.revalidate(); }, 5000);
-    return () => clearInterval(t);
-  }, [running, revalidator]);
+  const loadedRevision=jobRevision(d.jobs);
+  const pollRef=useRef(()=>{});
+  pollRef.current=()=>{if(progress.state==='idle' && document.visibilityState==='visible')progress.load('/app/job-status');};
+  useEffect(()=>{if(!running)return;const timer=setInterval(()=>pollRef.current(),5000);return()=>clearInterval(timer);},[running]);
+  useEffect(()=>{if(progress.data?.revision && progress.data.revision!==loadedRevision && revalidator.state==='idle') revalidator.revalidate();},[progress.data?.revision]);
   useEffect(() => {
     setSelected([]);
     setQuery("");
@@ -172,6 +191,7 @@ export default function Workspace() {
   const products = d.resources.filter((r) => r.kind === "product");
   const review = d.changes.find((c) => c.id === reviewId);
   const factResource = d.resources.find((r) => r.id === factId);
+  const staleTitle = review && ["seo","title"].includes(review.feature) && (()=>{try{const after=JSON.parse(review.after);const title=String(review.feature === "seo" ? after.title || "" : after).trim();return !title || title.split(/\s+/u).length>5 || title.length>60;}catch{return true;}})();
   const reviewResource =
     review && d.resources.find((r) => r.id === review.resourceId);
   const reviewValue = review
@@ -565,6 +585,8 @@ export default function Workspace() {
               {generationMessage}
             </div>
           )}
+          {busy && <p role="status" aria-live="polite">Submitting your request… Please wait; you do not need to click again.</p>}
+          {sectionGuide[section] && <details className="card" style={{padding:'16px 20px',marginBottom:16}}><summary style={{cursor:'pointer',fontWeight:600}}>What is this section and how do I use it?</summary><p>{sectionGuide[section].shows}</p><ol>{sectionGuide[section].steps.map(step=><li key={step} style={{marginBottom:8}}>{step}</li>)}</ol></details>}
           <div className="card" style={{padding:'12px 20px',marginBottom:16,display:'flex',gap:20,flexWrap:'wrap'}} aria-label="Workflow shortcuts">
             <Link to="/app/audit">1. Find issues</Link><Link to="/app/reviews">2. Review & apply ({pending.length})</Link><Link to="/app/reviews">3. Check updates</Link>
           </div>
@@ -1785,6 +1807,7 @@ export default function Workspace() {
               <Badge>{review.status}</Badge>
               {["title","seo"].includes(review.feature) && <span>{review.feature === "seo" ? "Search title only; the visible page title stays unchanged." : "Updates the visible page title."} Maximum five words.</span>}
             </div>
+            {staleTitle && review.status === "pending" && <div className="notice warning"><p>This saved proposal exceeds the current five-word title limit. It cannot be applied. Generate a replacement to review.</p><Button disabled={busy} onClick={()=>{optimise([review.resourceId],review.feature,true);setReviewId("");}}>Generate shorter replacement</Button></div>}
             {JSON.parse(review.blockers).length > 0 && (
               <div className="notice warning">
                 <strong>Confirm these details first</strong>
@@ -1891,7 +1914,7 @@ export default function Workspace() {
                   </Button>
                   <Button
                     primary
-                    disabled={busy || JSON.parse(review.blockers).length > 0}
+                    disabled={busy || Boolean(staleTitle) || JSON.parse(review.blockers).length > 0}
                     onClick={() => {
                       submit("approve", { id: review.id });
                     }}
@@ -1936,7 +1959,7 @@ export default function Workspace() {
           <fetcher.Form
             method="post"
             key={factResource.id}
-            onSubmit={() => setFactId("")}
+            ref={factsForm}
           >
             <input
               type="hidden"
@@ -1955,6 +1978,9 @@ export default function Workspace() {
                   Confirm only what you have checked. Saving facts supersedes
                   pending copy previews so you can regenerate them.
                 </p>
+                <Button disabled={busy} onClick={()=>{setFactMessage("");submit("suggestFacts",{id:factResource.id});}}>Auto-populate empty fields & keyword</Button>
+                <p role="status">{busy ? "Working…" : factMessage}</p>
+                {fetcher.data?.ok===false && <p role="alert">{fetcher.data.message}</p>}
                 {Object.entries(factLabels).map(([k, label]) => {
                   const f: Facts = JSON.parse(factResource.facts);
                   return (
@@ -1989,7 +2015,7 @@ export default function Workspace() {
               </>
             )}
             <div className="dialog-actions">
-              <button className="button primary">Save facts & keyword</button>
+              <button className="button primary" disabled={busy}>{busy ? "Saving…" : "Save facts & keyword"}</button>
             </div>
           </fetcher.Form>
         )}

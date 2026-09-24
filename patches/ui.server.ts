@@ -6,6 +6,7 @@ import { context } from "./context.server";
 import { requireSameOrigin, encrypt, credentials } from "./security.server";
 import { features, settings } from "./types";
 import { enqueue, enqueueGeneration, approve, log, proposeRedirect, propose, refreshCatalogueAudit } from "./service.server";
+import { extractFacts, keywordFor } from "./catalogue";
 import { audit } from "./service.server";
 import { classifyAnswer } from "./integrations.server";
 export async function loadUI(request: Request) {
@@ -226,6 +227,11 @@ export async function actionUI(request: Request) {
         });
         break;
       }
+      case "suggestFacts": {
+        const r=await prisma.resource.findFirstOrThrow({where:{id:value('id'),storeId:store.id}});
+        const payload=JSON.parse(r.payload);
+        return data({ok:true,message:'Suggestions extracted from existing product information. Review them before confirming.',factResourceId:r.id,factSuggestions:extractFacts(payload),keywordSuggestion:keywordFor(payload,r.kind)});
+      }
       case "facts": {
         const r = await prisma.resource.findFirstOrThrow({
           where: { id: value("id"), storeId: store.id },
@@ -270,7 +276,7 @@ export async function actionUI(request: Request) {
           resourceId: r.id,
           actor,
         });
-        break;
+        return data({ok:true,message:"Product facts saved.",factsSaved:r.id});
       }
       case "keyword": {
         const r = await prisma.resource.findFirstOrThrow({
