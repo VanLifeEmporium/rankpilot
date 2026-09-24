@@ -1,12 +1,12 @@
 type Job = {kind:string;status:string;payload:string;error?:string|null};
 type Change = {id:string;status:string};
-export type JobResult = {changeId?:string;message?:string;error?:string};
+export type JobResult = {resourceId?:string;changeId?:string;message?:string;error?:string};
 export function jobResults(job:Job):JobResult[] {
   try {
     const value=JSON.parse(job.payload)?.result;
     if(!Array.isArray(value)) return [];
     return value.filter((r):r is JobResult => r !== null && typeof r === 'object' &&
-      ['changeId','message','error'].every(k => r[k] === undefined || typeof r[k] === 'string'));
+      ['resourceId','changeId','message','error'].every(k => r[k] === undefined || typeof r[k] === 'string'));
   } catch { return []; }
 }
 export function resultMessage(result:JobResult,changes:Change[]):string {

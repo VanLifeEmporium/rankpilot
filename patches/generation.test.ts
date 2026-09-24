@@ -121,3 +121,27 @@ it('requires exact output excerpts in the generation instructions',async()=>{
  expect(JSON.parse(f.mock.calls[0][1].body).instructions).toContain('claim MUST be an exact non-empty excerpt');
  expect(f).toHaveBeenCalledTimes(2);
 });
+it('reviews metadata as a summary rather than a replacement body',async()=>{
+ const f=vi.fn().mockResolvedValueOnce(answer(proposal)).mockResolvedValueOnce(answer({allowed:true,reason:'Specific source-supported summary.'}));vi.stubGlobal('fetch',f);
+ await generateCopy('s',p,'product','seo',{});
+ const review=JSON.parse(f.mock.calls[1][1].body);
+ expect(review.instructions).toContain('Review ONLY the proposed SEO title');
+ expect(review.instructions).toContain('do NOT reject because warranty');
+ expect(review.instructions).not.toContain('removed links/images');
+});
+it('retains strict completeness review for body replacements',async()=>{
+ const f=vi.fn().mockResolvedValueOnce(answer(proposal)).mockResolvedValueOnce(answer({allowed:false,reason:'A specification was removed.'}));vi.stubGlobal('fetch',f);
+ await expect(generateCopy('s',p,'product','description',{})).rejects.toThrow('specification was removed');
+ expect(JSON.parse(f.mock.calls[1][1].body).instructions).toContain('lost useful specifications');
+});
+it('allows a supported article rewrite which preserves its image and link',async()=>{
+ const tail='<img src="https://cdn.shopify.com/a.jpg" alt="A mug"><a href="/pages/care">Care</a>';
+ const value={...proposal,content:proposal.content+tail};
+ const f=vi.fn().mockResolvedValueOnce(answer(value)).mockResolvedValueOnce(answer({allowed:true,reason:'Preserves source details, link and image.'}));vi.stubGlobal('fetch',f);
+ const result=await generateCopy('s',{...p,descriptionHtml:p.descriptionHtml+tail},'article','description',{});
+ expect(result.after).toContain('https://cdn.shopify.com/a.jpg');expect(result.after).toContain('/pages/care');
+});
+it('blocks a body rewrite that removes an image even if the reviewer misses it',async()=>{
+ const f=vi.fn().mockResolvedValueOnce(answer(proposal)).mockResolvedValueOnce(answer({allowed:true,reason:'Incorrect reviewer judgement.'}));vi.stubGlobal('fetch',f);
+ await expect(generateCopy('s',{...p,descriptionHtml:p.descriptionHtml+'<img src="https://cdn.shopify.com/a.jpg" alt="A mug">'},'article','description',{})).rejects.toThrow('changes or removes an existing image');
+});

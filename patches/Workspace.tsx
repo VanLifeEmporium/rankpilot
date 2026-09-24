@@ -1,3 +1,4 @@
+import {findingKey,findingAction,findingProgress} from "../core/finding-workflow";
 import {jobResults as readJobResults, jobMessage, jobLabel, resultMessage} from "../core/job-feedback";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -107,7 +108,7 @@ export default function Workspace() {
   const [selected, setSelected] = useState<string[]>([]);
   const [feature, setFeature] = useState("seo");
   const [reviewId, setReviewId] = useState("");
-  const [activeIssue, setActiveIssue] = useState<number | null>(null);
+  const [activeIssue, setActiveIssue] = useState<string | null>(null);
   const openedChange = useRef("");
   const [factId, setFactId] = useState("");
   const [severity, setSeverity] = useState("all");
@@ -177,8 +178,8 @@ export default function Workspace() {
     ? JSON.parse(reviewResource.payload)
     : null;
   const productCount = products.length;
-  const optimise = (ids: string[], f = feature) =>
-    submit("optimise", { ids: JSON.stringify(ids), feature: f });
+  const optimise = (ids: string[], f = feature, regenerate=false) =>
+    submit("optimise", { ids: JSON.stringify(ids), feature: f, regenerate:String(regenerate) });
   const busy = fetcher.state !== "idle";
   const list = d.resources.filter(
     (r) =>
@@ -784,7 +785,7 @@ export default function Workspace() {
                 <Metric
                   label="Awaiting approval"
                   value={String(pending.length)}
-                  caption="Nothing publishes without a rule or review"
+                  caption="Accepting a preview applies it automatically. Autopilot is off."
                 />
               </div>
               <section className="card">
@@ -821,8 +822,12 @@ export default function Workspace() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredIssues.map((i, index) => (
-                          <tr key={index}>
+                      {filteredIssues.map((i) => {
+                        const key=findingKey(i);
+                        const resource=d.resources.find(r=>r.id===i.resourceId);
+                        const action=findingAction(i,resource,d.settings);
+                        const progress=findingProgress(i,d.changes,d.jobs);
+                        return <tr key={key}>
                             <td>
                               <Badge
                                 tone={
@@ -841,40 +846,21 @@ export default function Workspace() {
                               <small>{i.detail}</small>
                             </td>
                             <td>
-                              {i.feature ? (
-                                <Button
-                                  disabled={busy}
-                                  onClick={() => {
-                                    setActiveIssue(index);
-                                    openedChange.current = "";
-                                    optimise([i.resourceId], i.feature);
-                                  }}
-                                >
-                                  {busy && activeIssue === index ? "Checking…" : "Generate fix"}
-                                </Button>
-                              ) : (
-                                <small>
-                                  <strong>Manual review</strong>
-                                  {i.detail.includes("404")
-                                    ? "Choose a relevant live destination, then update the link or create a redirect."
-                                    : /Organization|schema|entity/i.test(i.detail)
-                                      ? "Inspect the theme and app schema sources before removing any markup."
-                                      : /heading/i.test(i.detail)
-                                        ? "Inspect the article and theme headings; correct the level that skips the hierarchy."
-                                        : "Review this finding in the page or theme editor. No automatic fix is available."}
-                                </small>
-                              )}
-                              {activeIssue === index && (
-                                <div role="status" aria-live="polite" style={{ maxWidth: 320, marginTop: 8 }}>
-                                  {busy ? "Checking this item…" : generationMessage}
-                                  {!busy && generatedChangeId && (
-                                    <Button onClick={() => setReviewId(generatedChangeId!)}>{d.changes.find(c => c.id === generatedChangeId)?.status === "pending" ? "Review proposal" : "View change"}</Button>
-                                  )}
-                                </div>
-                              )}
+                              {action.kind === 'facts' ? <Button onClick={()=>setFactId(i.resourceId)}>Confirm product facts</Button>
+                                : action.kind === 'generate' ? <>
+                                  {progress.changeId && <Button onClick={()=>{setPreviewTab('after');setReviewId(progress.changeId!);}}>{d.changes.find(c=>c.id===progress.changeId)?.status==='pending' ? 'Review fix' : 'View change'}</Button>}
+                                  {progress.canGenerate && <Button disabled={busy || progress.busy} onClick={()=>{
+                                    setActiveIssue(key); openedChange.current=''; optimise([i.resourceId],i.feature!,Boolean(progress.message));
+                                  }}>{busy && activeIssue===key ? 'Queuing…' : progress.message ? 'Generate again' : 'Generate fix'}</Button>}
+                                </> : <strong>{action.label}</strong>}
+                              {action.detail && <p className="muted" style={{maxWidth:360}}>{action.detail}</p>}
+                              {(progress.message || activeIssue===key) && action.kind==='generate' && <div role="status" aria-live="polite" style={{maxWidth:360,marginTop:8}}>
+                                {activeIssue===key && fetcher.data?.ok===false ? fetcher.data.message : progress.message || (activeIssue===key ? generationMessage : '')}
+                              </div>}
+
                             </td>
-                          </tr>
-                        ))}
+                          </tr>;
+                        })}
                     </tbody>
                   </table>
                 </div>
@@ -1900,6 +1886,9 @@ export default function Workspace() {
               ))}
             </ul>
             {review.error && <div className="notice error">{review.error}</div>}
+            {['approved','applying'].includes(review.status) && <p role="status">Accepted. Applying and verifying in Shopify…</p>}
+            {review.status==='applied' && <p role="status">Applied. Future changes still require your acceptance.</p>}
+            {fetcher.data?.ok===false && <p role="alert">{fetcher.data.message}</p>}
             <div className="dialog-actions">
               {review.status === "pending" && (
                 <>
@@ -1916,13 +1905,15 @@ export default function Workspace() {
                     disabled={busy || JSON.parse(review.blockers).length > 0}
                     onClick={() => {
                       submit("approve", { id: review.id });
-                      setReviewId("");
                     }}
                   >
-                    {d.demo ? "Approve demo change" : "Approve change"}
+                    {d.demo ? "Approve demo change" : "Accept and apply"}
                   </Button>
                 </>
               )}
+              {['apply_failed','verification_failed','rollback_failed'].includes(review.status) && d.jobs.filter(j=>{
+                try{return ['apply','rollback'].includes(j.kind) && j.status==='failed' && JSON.parse(j.payload).changeId===review.id;}catch{return false;}
+              }).slice(0,1).map(j=><Button key={j.id} disabled={busy} onClick={()=>submit('retry',{id:j.id})}>Retry and verify</Button>)}
               {review.status === "applied" && (
                 <Button
                   onClick={() => {

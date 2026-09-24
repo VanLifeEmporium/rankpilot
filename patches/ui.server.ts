@@ -5,7 +5,7 @@ import prisma from "../db.server";
 import { context } from "./context.server";
 import { requireSameOrigin, encrypt, credentials } from "./security.server";
 import { features, settings } from "./types";
-import { enqueue, approve, log, proposeRedirect, propose } from "./service.server";
+import { enqueue, enqueueGeneration, approve, log, proposeRedirect, propose, refreshCatalogueAudit } from "./service.server";
 import { audit } from "./service.server";
 import { classifyAnswer } from "./integrations.server";
 export async function loadUI(request: Request) {
@@ -44,7 +44,7 @@ export async function loadUI(request: Request) {
     prisma.job.findMany({
       where: { storeId: store.id },
       orderBy: { createdAt: "desc" },
-      take: 30,
+      take: 1000,
     }),
     prisma.event.findMany({
       where: { storeId: store.id },
@@ -90,9 +90,9 @@ export async function loadUI(request: Request) {
               "a",
               "br",
               "details",
-              "summary",
+              "summary", "img", "table", "thead", "tbody", "tr", "th", "td",
             ],
-            allowedAttributes: { a: ["href"] },
+            allowedAttributes: { a: ["href"], img:["src","alt","width","height"] },
             allowedSchemes: ["https", "http"],
           })
         : null,
@@ -111,9 +111,9 @@ export async function loadUI(request: Request) {
               "a",
               "br",
               "details",
-              "summary",
+              "summary", "img", "table", "thead", "tbody", "tr", "th", "td",
             ],
-            allowedAttributes: { a: ["href"] },
+            allowedAttributes: { a: ["href"], img:["src","alt","width","height"] },
             allowedSchemes: ["https", "http"],
           })
         : null,
@@ -184,22 +184,18 @@ export async function actionUI(request: Request) {
         if (["seo", "description", "alt"].includes(feature)) {
           const keys = await credentials(store.id);
           if (!keys.openaiKey) throw new Error("Connect an OpenAI API key in Settings to generate source-based copy and image descriptions. No change has been made.");
-          const job = await enqueue(store.id, "optimise", {ids,feature});
-          return data({ok:true,jobId:job.id,message:"Generation queued. The result will appear beside this action when ready. Nothing is published automatically."});
         }
-        if (ids.length === 1) {
-          const proposal = await propose(store.id, ids[0], feature);
-          return data({ok:true,changeId:proposal?.id,message:proposal ? "Proposal ready for review" : "No change needed; existing content retained"});
-        }
-        for(let start=0;start<ids.length;start+=25)await enqueue(store.id,"optimise",{ids:ids.slice(start,start+25),feature});
-        break;
+        const job = await enqueueGeneration(store.id, ids, feature, value('regenerate')==='true');
+        return data({ok:true,jobId:job.id,message:job.status==='completed' ? 'Existing generation result retrieved. Review the outcome before generating again.' : 'Generation queued. Nothing is published until you accept a preview.'});
       }
       case "redirect":
         await proposeRedirect(store.id, value("path"), value("target"));
         break;
-      case "approve":
+      case "approve": {
         await approve(store.id, value("id"), actor);
-        return data({ok:true,message:"Approved. Applying the change in the background; check its status in Recent jobs."});
+        const job=await prisma.job.findUnique({where:{dedup:`${store.id}:apply:${value('id')}`}});
+        return data({ok:true,jobId:job?.id,message:"Accepted. Applying and verifying the change in Shopify."});
+      }
       case "reject": {
         const updated = await prisma.change.updateMany({
           where: { id: value("id"), storeId: store.id, status: "pending" },
@@ -210,7 +206,7 @@ export async function actionUI(request: Request) {
           changeId: value("id"),
           actor,
         });
-        break;
+        return data({ok:true,message:"Proposal rejected. Shopify content was not changed."});
       }
       case "rollback": {
         const c = await prisma.change.findFirstOrThrow({
@@ -223,6 +219,7 @@ export async function actionUI(request: Request) {
         const j = await prisma.job.findFirstOrThrow({
           where: { id: value("id"), storeId: store.id, status: "failed" },
         });
+        if(j.kind==='rollback') await prisma.change.updateMany({where:{id:JSON.parse(j.payload).changeId,storeId:store.id,status:{in:['rollback_failed','verification_failed']}},data:{status:'rolling_back',error:null}});
         await prisma.job.update({
           where: { id: j.id },
           data: { status: "queued", attempts: 0, runAt: new Date() },
@@ -268,6 +265,7 @@ export async function actionUI(request: Request) {
           },
           data: { status: "superseded" },
         });
+        await refreshCatalogueAudit(store.id);
         await log(store.id, "Product facts updated", {
           resourceId: r.id,
           actor,

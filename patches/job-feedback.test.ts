@@ -2,9 +2,9 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {it,expect,vi} from 'vitest';
 import {jobResults,jobMessage,jobLabel} from '../app/core/job-feedback';
-const state=vi.hoisted(()=>({job:{id:'audit-1',kind:'audit',status:'completed',payload:JSON.stringify({result:{score:82,issues:[]}})},section:'dashboard'}));
+const state=vi.hoisted(()=>({job:{id:'audit-1',kind:'audit',status:'completed',payload:JSON.stringify({result:{score:82,issues:[]}})},section:'dashboard',issues:[] as any[],resources:[] as any[],changes:[] as any[]}));
 vi.mock('react-router',()=>({
- useLoaderData:()=>({jobs:[state.job],audits:[],resources:[],changes:[],metrics:[],observations:[],events:[],reports:[],discoveries:{},settings:{},credentialNames:[],domain:'test.myshopify.com',demo:false}),
+ useLoaderData:()=>({jobs:[state.job],audits:state.issues.length ? [{issues:JSON.stringify(state.issues),coverage:'{}',createdAt:new Date().toISOString(),resourceCount:1,score:80,aeoScore:0}] : [],resources:state.resources,changes:state.changes,metrics:[],observations:[],events:[],reports:[],discoveries:{},settings:{policies:{source:"",delivery:"",returns:""}},credentialNames:[],domain:'test.myshopify.com',demo:false}),
  useParams:()=>({section:state.section}),useFetcher:()=>({state:'idle',data:{ok:true,jobId:state.job.id},submit:vi.fn(),Form:'form'}),
  useFormAction:()=>'/app',useRevalidator:()=>({revalidate:vi.fn()}),Link:({to,children,...props}:any)=>React.createElement('a',{href:to,...props},children)
 }));
@@ -26,4 +26,14 @@ it('reflects applied changes rather than stale proposal-ready messages',()=>{
  const job={kind:'optimise',status:'completed',payload:JSON.stringify({result:[{changeId:'c',message:'Proposal ready for review'}]})};
  expect(jobMessage(job,[{id:'c',status:'applied'}])).toBe('Change applied');
  expect(jobMessage(job,[{id:'c',status:'pending'}])).toContain('not published');
+});
+
+it('renders durable finding actions for missing facts and a pending preview',()=>{
+ state.section='audit';
+ state.resources=[{id:'r',title:'Mug',kind:'product',facts:'{}',payload:JSON.stringify({collections:[],images:[],seo:{}})}];
+ state.issues=[{resourceId:'r',title:'Mug',code:'missing-product-faq',severity:'notice',detail:'Facts needed',feature:'faq'},{resourceId:'r',title:'Mug',code:'missing-meta-title',severity:'warning',detail:'Title needed',feature:'seo'}];
+ state.changes=[{id:'c',resourceId:'r',feature:'seo',status:'pending',blockers:'[]',createdAt:new Date().toISOString()}];
+ const html=renderToStaticMarkup(React.createElement(Workspace));
+ expect(html).toContain('Confirm product facts');expect(html).toContain('Review fix');expect(html).toContain('Ready for review; nothing published');
+ state.issues=[];state.resources=[];state.changes=[];
 });
