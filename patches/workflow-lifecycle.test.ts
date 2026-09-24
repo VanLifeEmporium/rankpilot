@@ -165,6 +165,24 @@ it('does not trust the historical title repair marker as a review of the descrip
  const {assertSafeCopy}=await import('../app/core/service.server');
  expect(()=>assertSafeCopy('seo',{title:'Camping mug',description:'Verified old copy'},{title:'Camping mug',description:'Unreviewed claim'},['source-reviewed-v1: The existing Shopify page title is reused verbatim. The proposed meta description is unchanged.'])).toThrow('Reject');
 });
+it('replaces a blocked legacy draft with a reviewed proposal that can be accepted and applied',async()=>{
+ remote.node.seo={title:'Camping mug',description:'Existing verified summary.'};
+ const r=await resource();const old=await propose(storeId,r.id,'seo');
+ await prisma.change.update({where:{id:old!.id},data:{reasons:JSON.stringify(['source-reviewed-v1: The existing Shopify page title is reused verbatim. The proposed meta description is unchanged.'])}});
+ const {displayChange}=await import('../app/core/ui-data.server');
+ const shown=displayChange(await prisma.change.findUniqueOrThrow({where:{id:old!.id}}));
+ expect(JSON.parse(shown.blockers).join(' ')).toContain('new content review');
+ await expect(approve(storeId,old!.id,'owner')).rejects.toThrow();expect(remote.writes).toBe(0);
+ const job=await enqueueGeneration(storeId,[r.id],'seo',true);await tick({lane:'background'});
+ const finished=await prisma.job.findUniqueOrThrow({where:{id:job.id}});
+ const nextId=JSON.parse(finished.payload).result[0].changeId;
+ expect(nextId).toBeTruthy();expect(nextId).not.toBe(old!.id);
+ const next=displayChange(await prisma.change.findUniqueOrThrow({where:{id:nextId}}));
+ expect(JSON.parse(next.blockers)).toEqual([]);
+ await approve(storeId,nextId,'owner');await tick({lane:'apply'});
+ expect((await prisma.change.findUniqueOrThrow({where:{id:nextId}})).status).toBe('applied');
+ expect(remote.writes).toBe(1);
+});
 it('retries a failed generation from Products when the user explicitly requests generation again',async()=>{
  const r=await resource();const job=await enqueueGeneration(storeId,[r.id],'seo');
  await prisma.job.update({where:{id:job.id},data:{status:'completed',payload:JSON.stringify({ids:[r.id],feature:'seo',result:[{error:'Provider unavailable'}]})}});

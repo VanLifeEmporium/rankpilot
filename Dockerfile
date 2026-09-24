@@ -48,6 +48,8 @@ COPY patches/release5/tests/core.test.ts /app/tests/core.test.ts
 COPY patches/release5/tests/release5-ui.test.ts /app/tests/release5-ui.test.ts
 COPY patches/release5/prisma/migrations/20260924220000_generation_cache/migration.sql /app/prisma/migrations/20260924220000_generation_cache/migration.sql
 COPY patches/release5/prisma/schema.prisma /app/prisma/schema.prisma
+COPY patches/release51/ReviewActions.tsx /app/app/components/ReviewActions.tsx
+COPY patches/release51/review-actions.test.ts /app/tests/review-actions.test.ts
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite

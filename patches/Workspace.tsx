@@ -1,4 +1,5 @@
 import {ChangeValues} from "./ChangeValues";
+import {ReviewActions} from "./ReviewActions";
 import {Connections} from "./Connections";
 import {SectionHeading,Guidance} from "./SectionHeading";
 import {metricGuide} from "../core/subsection-guide";
@@ -204,6 +205,8 @@ export default function Workspace() {
   const factResource = resourceDetail.data?.id===factId ? resourceDetail.data : d.resources.find((r) => r.id === factId);
   useEffect(()=>{if(factId && resourceDetail.data?.id!==factId && resourceDetail.state==='idle')resourceDetail.load(`/app/resource?id=${encodeURIComponent(factId)}`);},[factId,resourceDetail]);
   const staleTitle = review && ["seo","title"].includes(review.feature) && (()=>{try{const after=JSON.parse(review.after);const title=String(review.feature === "seo" ? after.title || "" : after).trim();return !title || title.split(/\s+/u).length>5 || title.length>60;}catch{return true;}})();
+  const reviewBlockers: string[] = review ? JSON.parse(review.blockers) : [];
+  if(staleTitle && !reviewBlockers.length) reviewBlockers.push('This saved title must be replaced with a title of at most five words and 60 characters.');
   const reviewResource =
     review && d.resources.find((r) => r.id === review.resourceId);
   const reviewValue = review
@@ -1680,7 +1683,7 @@ export default function Workspace() {
       </div>
       <dialog
         ref={dialog}
-        className="review-dialog"
+        className="review-dialog change-preview"
         onClose={() => setReviewId("")}
       >
         <div className="dialog-head">
@@ -1698,32 +1701,13 @@ export default function Workspace() {
         </div>
         {review && (
           <>
+            <div className="review-body">
             <Guidance title="Change preview"/>
             <div className="preview-meta">
               <Badge>{labels[review.feature]}</Badge>
               <Badge>{review.status}</Badge>
               {["title","seo"].includes(review.feature) && <span>{review.feature === "seo" ? "Search title only; the visible page title stays unchanged." : "Updates the visible page title."} Maximum five words.</span>}
             </div>
-            {staleTitle && review.status === "pending" && <div className="notice warning"><p>This saved proposal exceeds the current five-word title limit. It cannot be applied. Generate a replacement to review.</p><Button disabled={busy} onClick={()=>{optimise([review.resourceId],review.feature,true);setReviewId("");}}>Generate shorter replacement</Button></div>}
-            {JSON.parse(review.blockers).length > 0 && (
-              <div className="notice warning">
-                <strong>This proposal needs attention</strong>
-                <ul>
-                  {JSON.parse(review.blockers).map((b: string) => (
-                    <li key={b}>{b}</li>
-                  ))}
-                </ul>
-                {review.status === "pending" && <Button disabled={busy} onClick={() => {optimise([review.resourceId],review.feature,true);setReviewId("");}}>Generate replacement</Button>}
-                <Button
-                  onClick={() => {
-                    setFactId(review.resourceId);
-                    setReviewId("");
-                  }}
-                >
-                  Edit product facts
-                </Button>
-              </div>
-            )}
             {review.feature === "alt" && reviewPayload?.images?.map((img:{id:string;url:string;alt:string}) => (
               <figure key={img.id}><img src={img.url} alt={img.alt || "Image awaiting an alt description"} style={{maxWidth:240,maxHeight:180}} /><figcaption>Image on this page</figcaption></figure>
             ))}
@@ -1789,31 +1773,18 @@ export default function Workspace() {
                 <li key={r}>{r}</li>
               ))}
             </ul>
+            </div>
+            <div className="review-footer">
             {review.error && <div className="notice error">{review.error}</div>}
             {['approved','applying'].includes(review.status) && <p role="status">Accepted. Applying and verifying in Shopify…</p>}
             {review.status==='applied' && <p role="status">Applied. Future changes still require your acceptance.</p>}
             {fetcher.data?.ok===false && <p role="alert">{fetcher.data.message}</p>}
-            <div className="dialog-actions">
               {review.status === "pending" && (
-                <>
-                  <Button
-                    onClick={() => {
-                      submit("reject", { id: review.id });
-                      setReviewId("");
-                    }}
-                  >
-                    Reject
-                  </Button>
-                  <Button
-                    primary
-                    disabled={busy || Boolean(staleTitle) || JSON.parse(review.blockers).length > 0}
-                    onClick={() => {
-                      submit("approve", { id: review.id });
-                    }}
-                  >
-                    {d.demo ? "Approve demo change" : "Accept and apply"}
-                  </Button>
-                </>
+                <ReviewActions blockers={reviewBlockers} busy={busy} accepting={fetcher.formData?.get('intent')==='approve'} demo={d.demo}
+                  onReject={()=>{submit('reject',{id:review.id});setReviewId('');}}
+                  onAccept={()=>submit('approve',{id:review.id})}
+                  onEditFacts={review.feature==='faq' ? ()=>{setFactId(review.resourceId);setReviewId('');} : undefined}
+                  onReplace={()=>{optimise([review.resourceId],review.feature,true);setReviewId('');}}/>
               )}
               {['apply_failed','verification_failed','rollback_failed'].includes(review.status) && d.jobs.filter(j=>{
                 try{return ['apply','rollback'].includes(j.kind) && j.status==='failed' && JSON.parse(j.payload).changeId===review.id;}catch{return false;}

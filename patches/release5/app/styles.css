@@ -927,7 +927,44 @@ dialog::backdrop {
   margin-top: 20px;
   padding-top: 20px;
   border-top: 1px solid var(--line);
+  flex-wrap: wrap;
 }
+.change-preview[open] {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.change-preview > .dialog-head {
+  padding: 20px 24px 12px;
+  flex-shrink: 0;
+}
+.review-body {
+  padding: 0 24px 16px;
+  min-height: 0;
+  overflow-y: auto;
+}
+.review-footer {
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+  background: white;
+  flex-shrink: 0;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+.review-footer .dialog-actions {
+  margin: 0;
+  padding-top: 12px;
+  border: 0;
+}
+.review-blocker {
+  padding: 12px;
+  border: 1px solid #efcb8c;
+  border-radius: 8px;
+  background: #fff7e5;
+  font-size: 13px;
+}
+.review-blocker p { margin: 6px 0 0; }
 .fact-field {
   padding-bottom: 15px;
   border-bottom: 1px solid var(--line);
