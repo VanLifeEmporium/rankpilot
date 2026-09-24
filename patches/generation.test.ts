@@ -104,3 +104,20 @@ it('refuses to draft an article without relevant catalogue evidence',async()=>{
  const {generateArticle}=await import('../app/core/generation.server');
  await expect(generateArticle('s','Kitchen guide',[])).rejects.toThrow('No relevant');
 });
+it('matches presentation-only whitespace and typographic quotes without weakening source checks',()=>{
+ const output={...proposal,title:'Camper’s mug',description:'A mug with 350 ml capacity.',evidence:[{claim:"Camper's mug",quote:'Camper’s\u00a0mug'}]};
+ expect(()=>validateCopy('Camper’s mug. Capacity 350 ml.',{},output,'seo')).not.toThrow();
+});
+it('identifies the missing source quote and rejects an empty claim',()=>{
+ expect(()=>validateCopy('Camping mug',{}, {...proposal,evidence:[{claim:'350 ml',quote:'Capacity 350 ml.'}]},'seo')).toThrow('source evidence not found: “Capacity 350 ml.”');
+ expect(()=>validateCopy('Capacity 350 ml.',{}, {...proposal,evidence:[{claim:'',quote:'Capacity 350 ml.'}]},'seo')).toThrow('does not quote the proposed text');
+});
+it('does not normalise away a changed specification or a negation',()=>{
+ expect(()=>validateCopy('Not waterproof. Capacity 350 ml.',{}, {...proposal,evidence:[{claim:'350 ml',quote:'Waterproof. Capacity 350 ml.'}]},'seo')).toThrow('source evidence not found');
+});
+it('requires exact output excerpts in the generation instructions',async()=>{
+ const f=vi.fn().mockResolvedValueOnce(answer(proposal)).mockResolvedValueOnce(answer({allowed:true,reason:'Supported.'}));vi.stubGlobal('fetch',f);
+ await generateCopy('s',p,'product','seo',{});
+ expect(JSON.parse(f.mock.calls[0][1].body).instructions).toContain('claim MUST be an exact non-empty excerpt');
+ expect(f).toHaveBeenCalledTimes(2);
+});
