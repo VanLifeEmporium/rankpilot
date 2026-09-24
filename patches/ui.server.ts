@@ -13,14 +13,14 @@ export async function loadUI(request: Request) {
   let audits = await prisma.audit.findMany({
     where: { storeId: store.id },
     orderBy: { createdAt: "desc" },
-    take: 12,
+    take: new URL(request.url).pathname.endsWith("/reports") ? 12 : 1,
   });
   if (store.demo && !audits.length) {
     await audit(store.id);
     audits = await prisma.audit.findMany({
       where: { storeId: store.id },
       orderBy: { createdAt: "desc" },
-      take: 12,
+      take: new URL(request.url).pathname.endsWith("/reports") ? 12 : 1,
     });
   }
   const [

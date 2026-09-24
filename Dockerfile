@@ -17,6 +17,7 @@ COPY patches/worker.ts /app/scripts/worker.ts
 COPY patches/generate-feedback.test.ts /app/tests/generate-feedback.test.ts
 COPY patches/finding-workflow.test.ts /app/tests/finding-workflow.test.ts
 COPY patches/workflow-lifecycle.test.ts /app/tests/workflow-lifecycle.test.ts
+COPY patches/app.tsx /app/app/routes/app.tsx
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite

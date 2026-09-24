@@ -38,7 +38,7 @@ it('does not retry provider failures as length repairs',async()=>{
  const f=vi.fn().mockResolvedValue(new Response('{}',{status:429}));vi.stubGlobal('fetch',f);
  await expect(generateAlts('s',imagePayload)).rejects.toThrow('429');expect(f).toHaveBeenCalledTimes(1);
 });
-const proposal={changed:true,content:'<p>A compact camping mug with a capacity of 350 ml.</p>',title:'Camping mug | Van Life Emporium',description:'A compact camping mug with a 350 ml capacity.',reason:'Makes the capacity explicit in the summary.',missingFacts:[],evidence:[{claim:'350 ml',quote:'Capacity 350 ml.'}]};
+const proposal={changed:true,content:'<p>A compact camping mug with a capacity of 350 ml.</p>',title:'Compact Camping Mug',description:'A compact camping mug with a 350 ml capacity.',reason:'Makes the capacity explicit in the summary.',missingFacts:[],evidence:[{claim:'350 ml',quote:'Capacity 350 ml.'}]};
 afterEach(()=>vi.unstubAllGlobals());
 it('rejects an unsupported numerical specification',()=>{
  expect(()=>validateCopy('Capacity 350 ml.',p.descriptionHtml,{...proposal,content:'Capacity 500 ml.',evidence:[{claim:'Capacity',quote:'Capacity'}]},'description')).toThrow(/number/);
@@ -144,4 +144,11 @@ it('allows a supported article rewrite which preserves its image and link',async
 it('blocks a body rewrite that removes an image even if the reviewer misses it',async()=>{
  const f=vi.fn().mockResolvedValueOnce(answer(proposal)).mockResolvedValueOnce(answer({allowed:true,reason:'Incorrect reviewer judgement.'}));vi.stubGlobal('fetch',f);
  await expect(generateCopy('s',{...p,descriptionHtml:p.descriptionHtml+'<img src="https://cdn.shopify.com/a.jpg" alt="A mug">'},'article','description',{})).rejects.toThrow('changes or removes an existing image');
+});
+
+it('rejects a six-word SEO title even below the character limit',()=>{
+ expect(()=>validateCopy('Capacity 350 ml.',{}, {...proposal,title:'One Two Three Four Five Six'},'seo')).toThrow('five words');
+});
+it('accepts five-word titles with supported metadata',()=>{
+ expect(()=>validateCopy('Capacity 350 ml.',{}, {...proposal,title:'One Two Three Four Five'},'seo')).not.toThrow();
 });

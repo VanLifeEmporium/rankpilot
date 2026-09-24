@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import prisma from "../db.server";
 import {
   auditCatalogue,
+  cleanTitle,
   extractFacts,
   keywordFor,
   optimise,
@@ -324,7 +325,7 @@ export async function propose(
   });
   if (pending) {
     const reasons:string[]=JSON.parse(pending.reasons);
-    const outdated = (["seo","description"].includes(feature) && !reasons.some(r=>r.startsWith("source-reviewed-v1:"))) || (feature === "alt" && !reasons.some(r=>r.startsWith("image-reviewed-v1:")));
+    const outdated = ((feature === "seo" || feature === "title") && String(feature === "seo" ? JSON.parse(pending.after).title : JSON.parse(pending.after)).trim().split(/\s+/u).length > 5) || (["seo","description"].includes(feature) && !reasons.some(r=>r.startsWith("source-reviewed-v1:"))) || (feature === "alt" && !reasons.some(r=>r.startsWith("image-reviewed-v1:")));
     if(pending.status !== "pending" || (!outdated && sameField(JSON.parse(pending.before),fieldValue(p,feature)))) return pending;
     await prisma.change.update({where:{id:pending.id},data:{status:"rejected",error:"Superseded by source-based generation"}});
   }
@@ -337,7 +338,9 @@ export async function propose(
     },
     take: 3,
   });
-  const proposal = feature === "description" || feature === "seo"
+  const proposal = feature === "title" && (cleanTitle(p.title).split(/\s+/u).length > 5 || cleanTitle(p.title).length>60)
+    ? await generateCopy(storeId,{...p,seo:{title:p.title,description:p.seo.description}},resource.kind,"seo",JSON.parse(resource.facts)).then(result=>({...result,before:p.title,after:result.after.title}))
+    : feature === "description" || feature === "seo"
     ? await generateCopy(storeId, p, resource.kind, feature, JSON.parse(resource.facts))
     : feature === "alt" ? await generateAlts(storeId, p) : optimise(
     p,
@@ -369,6 +372,7 @@ export async function propose(
   return row;
 }
 export function assertSafeCopy(feature: string, before: any, after: any, reasons: string[] = []) {
+  if (["title","seo"].includes(feature)) { const title=String(feature === "seo" ? after?.title || "" : after || "").trim(); if(!title || title.split(/\s+/u).length>5 || title.length>60) throw new Error("Regenerate this proposal: titles must be at most five words and 60 characters."); }
   if (feature === "alt" && !reasons.some(r => r.startsWith("image-reviewed-v1:")))
     throw new Error("Regenerate this image proposal from the actual image before approval.");
   if (reasons.some(r => r.startsWith("source-reviewed-v1:"))) return;
@@ -704,7 +708,7 @@ export async function executeJob(job: {
   storeId: string;
   kind: string;
   payload: string;
-}) {
+}, yieldAfterResource = false) {
   const p = JSON.parse(job.payload);
   switch (job.kind) {
     case "audit":
@@ -722,6 +726,7 @@ export async function executeJob(job: {
           results.push({resourceId:id,error:e instanceof Error ? e.message : "Generation failed"});
         }
         await prisma.job.update({where:{id:job.id},data:{payload:JSON.stringify({...p,result:results})}});
+        if(yieldAfterResource) break;
       }
       return results;
     }
@@ -769,7 +774,8 @@ export async function tick() {
     data: { status: "queued", lockedAt: null },
   });
   await prisma.job.updateMany({where:{status:"queued",attempts:{gte:5}},data:{status:"failed",lockedAt:null,error:"Job stopped after repeated interruptions. Review completed results before retrying."}});
-  const next = await prisma.job.findFirst({
+  const priority = await prisma.job.findFirst({where:{status:"queued",runAt:{lte:new Date()},attempts:{lt:5},kind:{in:["apply","rollback"]}},orderBy:{createdAt:"asc"}});
+  const next = priority || await prisma.job.findFirst({
     where: {
       status: "queued",
       runAt: { lte: new Date() },
@@ -798,10 +804,12 @@ export async function tick() {
     30000,
   );
   try {
-    const result = await executeJob(next);
+    const result = await executeJob(next, true);
+    const payload=JSON.parse((await prisma.job.findUniqueOrThrow({where:{id:next.id}})).payload);
+    const unfinished=next.kind === "optimise" && Array.isArray(result) && result.length < payload.ids.length;
     await prisma.job.update({
       where: { id: next.id },
-      data: { status: "completed", lockedAt: null, error: null, payload: JSON.stringify({...JSON.parse((await prisma.job.findUniqueOrThrow({where:{id:next.id}})).payload), result}) },
+      data: { status: unfinished ? "queued" : "completed", attempts:0, lockedAt: null, error: null, payload: JSON.stringify({...payload, result}) },
     });
   } catch (e) {
     const error = e instanceof Error ? e.message : "Job failed";

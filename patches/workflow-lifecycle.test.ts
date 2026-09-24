@@ -116,3 +116,18 @@ it('moves an exhausted queue entry to a visible terminal failure',async()=>{
  await tick();const saved=await prisma.job.findUniqueOrThrow({where:{id:job.id}});
  expect(saved.status).toBe('failed');expect(saved.error).toContain('interruptions');expect(generateCopy).not.toHaveBeenCalled();
 });
+it('applies an accepted change ahead of older generation work',async()=>{
+ const r=await resource();const c=await propose(storeId,r.id,'seo');
+ const generation=await enqueueGeneration(storeId,[r.id],'description');
+ await approve(storeId,c!.id,'test-owner');await tick();
+ expect((await prisma.change.findUniqueOrThrow({where:{id:c!.id}})).status).toBe('applied');
+ expect((await prisma.job.findUniqueOrThrow({where:{id:generation.id}})).status).toBe('queued');
+});
+it('yields generation after one resource and persists progress',async()=>{
+ const r=await resource();const second=await prisma.resource.create({data:{storeId,remoteId:'second',kind:'product',title:'Second mug',handle:'second',payload:r.payload,facts:r.facts}});
+ const job=await enqueueGeneration(storeId,[r.id,second.id],'seo');await tick();
+ const halfway=await prisma.job.findUniqueOrThrow({where:{id:job.id}});
+ expect(halfway.status).toBe('queued');expect(JSON.parse(halfway.payload).result).toHaveLength(1);
+ await tick();const finished=await prisma.job.findUniqueOrThrow({where:{id:job.id}});
+ expect(finished.status).toBe('completed');expect(JSON.parse(finished.payload).result).toHaveLength(2);expect(generateCopy).toHaveBeenCalledTimes(2);
+});

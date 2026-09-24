@@ -35,6 +35,7 @@ const labels: Record<string, string> = {
 const nav = [
   "Dashboard",
   "Audit",
+  "Reviews",
   "Products",
   "Collections",
   "Content",
@@ -42,7 +43,9 @@ const nav = [
   "Reports",
   "Settings",
 ];
-const icons = ["◈", "⊞", "▣", "▦", "▤", "✳", "▥", "⚙"];
+const icons = ["◈", "⊞", "✓", "▣", "▦", "▤", "✳", "▥", "⚙"];
+const sectionNames:Record<string,string>={Dashboard:'Overview',Audit:'Find issues',Reviews:'Review & apply',Products:'Products',Collections:'Collections',Content:'Blog drafts',AEO:'FAQs & AI visibility',Reports:'Results & history',Settings:'Settings'};
+const sectionHelp:Record<string,string>={dashboard:'Start here. Run an audit, review proposed fixes and track verified updates.',audit:'Find issues → Generate fix → Review & apply. Generating does not publish.',reviews:'Compare each proposal, accept or reject it, and track whether Shopify was updated.',products:'Generate product titles, search snippets, descriptions and image alt text.',collections:'Improve collection copy and review redirects for retired collection URLs.',content:'Create and review unpublished blog drafts.',aeo:'Confirm product facts, prepare FAQs and measure AI mentions.',reports:'View performance and the history of changes applied to Shopify.',settings:'Manage connections and preferences. Autopilot remains off.'};
 const date = (s: string | Date) =>
   new Date(s).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 const show = (v: unknown) =>
@@ -127,7 +130,7 @@ export default function Workspace() {
   );
   useEffect(() => {
     if (!running) return;
-    const t = setInterval(() => revalidator.revalidate(), 2500);
+    const t = setInterval(() => { if(document.visibilityState === "visible" && revalidator.state === "idle") revalidator.revalidate(); }, 5000);
     return () => clearInterval(t);
   }, [running, revalidator]);
   useEffect(() => {
@@ -194,7 +197,7 @@ export default function Workspace() {
         r.title === collection) &&
       r.title.toLowerCase().includes(query.toLowerCase()),
   );
-  const title = nav.find((n) => n.toLowerCase() === section) || "Dashboard";
+  const title = sectionNames[nav.find((n) => n.toLowerCase() === section) || "Dashboard"];
   const newestMetrics = (provider: string) => metricPair(d.metrics, provider);
   const gsc = newestMetrics("gsc");
   const ga = newestMetrics("ga4");
@@ -475,12 +478,12 @@ export default function Workspace() {
           {nav.map((n, i) => (
             <Link
               key={n}
-              aria-label={n}
+              aria-label={sectionNames[n]}
               to={i === 0 ? "/app" : `/app/${n.toLowerCase()}`}
               className={section === n.toLowerCase() ? "active" : ""}
             >
               <span>{icons[i]}</span>
-              {n}
+              {sectionNames[n]}
               {n === "Audit" && issues.length > 0 && <b>{issues.length}</b>}
             </Link>
           ))}
@@ -517,29 +520,10 @@ export default function Workspace() {
             <div>
               <div className="eyebrow">VAN LIFE EMPORIUM</div>
               <h1>
-                {title === "Dashboard" ? "A clearer road to discovery" : title}
+                {title}
               </h1>
               <p>
-                {
-                  (
-                    {
-                      dashboard:
-                        "Your search visibility, the work behind it, and what to do next.",
-                      audit:
-                        "Prioritised checks across your catalogue and storefront.",
-                      products:
-                        "Turn supplier copy into useful, considered product pages.",
-                      collections:
-                        "Give each collection a clear purpose in search.",
-                      content:
-                        "Useful guides for life on the road. Always saved as drafts.",
-                      aeo: "Make the facts easy to find, understand and cite.",
-                      reports: "Follow the changes. Measure what happens next.",
-                      settings:
-                        "Decide what runs automatically and what needs your review.",
-                    } as Record<string, string>
-                  )[section]
-                }
+                {sectionHelp[section]}
               </p>
             </div>
             <div className="heading-actions">
@@ -552,7 +536,7 @@ export default function Workspace() {
               </span>
               <Button
                 primary
-                disabled={busy || running}
+                disabled={busy || auditJob?.status === "queued" || auditJob?.status === "running"}
                 onClick={() => submit("audit")}
               >
                 {auditSubmitting ? "Queueing audit…" : auditJob?.status === "queued" ? "Audit queued…" : auditJob?.status === "running" ? "Auditing store…" : "↻ Run store audit"}
@@ -581,6 +565,10 @@ export default function Workspace() {
               {generationMessage}
             </div>
           )}
+          <div className="card" style={{padding:'12px 20px',marginBottom:16,display:'flex',gap:20,flexWrap:'wrap'}} aria-label="Workflow shortcuts">
+            <Link to="/app/audit">1. Find issues</Link><Link to="/app/reviews">2. Review & apply ({pending.length})</Link><Link to="/app/reviews">3. Check updates</Link>
+          </div>
+          {section === "reviews" && <section className="card"><div className="card-head"><div><h2>Proposals and Shopify updates</h2><p>Accepted means queued. Applied means the saved Shopify value was verified. Open a change to see errors or retry.</p></div></div>{changesTable(d.changes)}</section>}
           {section === "dashboard" && (
             <>
               <div className="metrics-grid">
@@ -1795,6 +1783,7 @@ export default function Workspace() {
             <div className="preview-meta">
               <Badge>{labels[review.feature]}</Badge>
               <Badge>{review.status}</Badge>
+              {["title","seo"].includes(review.feature) && <span>{review.feature === "seo" ? "Search title only; the visible page title stays unchanged." : "Updates the visible page title."} Maximum five words.</span>}
             </div>
             {JSON.parse(review.blockers).length > 0 && (
               <div className="notice warning">

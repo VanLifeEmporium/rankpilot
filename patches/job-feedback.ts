@@ -22,7 +22,11 @@ export function jobLabel(job:Job):string {
 export function jobMessage(job:Job,changes:Change[]=[]):string {
   if(job.error) return job.error;
   const name=job.kind==='audit'?'Audit':job.kind==='optimise'?'Generation':job.kind==='apply'?'Application':'Job';
-  if(job.status!=='completed') return `${name} ${job.status}…`;
+  if(job.status!=='completed') {
+    const payload=(()=>{try{return JSON.parse(job.payload);}catch{return {};}})();
+    const progress=job.kind==='optimise' && Array.isArray(payload.ids) ? ` ${jobResults(job).length} of ${payload.ids.length} processed.` : '';
+    return `${name} ${job.status}…${progress}`;
+  }
   if(job.kind==='audit') return 'Audit completed. Findings updated.';
   const results=jobResults(job);
   if(results.length) return results.map(r=>resultMessage(r,changes)).join('; ');
