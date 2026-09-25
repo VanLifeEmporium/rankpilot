@@ -92,6 +92,27 @@ COPY patches/release7/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
 COPY patches/release7/tests/release5-ui.test.ts /app/tests/release5-ui.test.ts
 COPY patches/release7/tests/retest7.test.ts /app/tests/retest7.test.ts
 COPY patches/release7/tests/workflow-lifecycle.test.ts /app/tests/workflow-lifecycle.test.ts
+COPY patches/release8/app/styles.css /app/app/styles.css
+COPY patches/release8/app/routes/health.ts /app/app/routes/health.ts
+COPY patches/release8/app/routes/app.tsx /app/app/routes/app.tsx
+COPY patches/release8/app/components/Dashboard.tsx /app/app/components/Dashboard.tsx
+COPY patches/release8/app/components/TechnicalTools.tsx /app/app/components/TechnicalTools.tsx
+COPY patches/release8/app/components/PageSpeedResults.tsx /app/app/components/PageSpeedResults.tsx
+COPY patches/release8/app/components/TrafficTrend.tsx /app/app/components/TrafficTrend.tsx
+COPY patches/release8/app/components/Workspace.tsx /app/app/components/Workspace.tsx
+COPY patches/release8/app/core/crawl.server.ts /app/app/core/crawl.server.ts
+COPY patches/release8/app/core/integrations.server.ts /app/app/core/integrations.server.ts
+COPY patches/release8/app/core/dashboard.ts /app/app/core/dashboard.ts
+COPY patches/release8/app/core/technical-audit.ts /app/app/core/technical-audit.ts
+COPY patches/release8/app/core/types.ts /app/app/core/types.ts
+COPY patches/release8/app/core/merchant-copy.ts /app/app/core/merchant-copy.ts
+COPY patches/release8/app/core/ui.server.ts /app/app/core/ui.server.ts
+COPY patches/release8/app/core/subsection-guide.ts /app/app/core/subsection-guide.ts
+COPY patches/release8/app/core/generation.server.ts /app/app/core/generation.server.ts
+COPY patches/release8/app/core/service.server.ts /app/app/core/service.server.ts
+COPY patches/release8/app/core/performance.ts /app/app/core/performance.ts
+COPY patches/release8/tests/release8.test.ts /app/tests/release8.test.ts
+COPY patches/release8/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
