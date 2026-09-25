@@ -50,6 +50,25 @@ COPY patches/release5/prisma/migrations/20260924220000_generation_cache/migratio
 COPY patches/release5/prisma/schema.prisma /app/prisma/schema.prisma
 COPY patches/release51/ReviewActions.tsx /app/app/components/ReviewActions.tsx
 COPY patches/release51/review-actions.test.ts /app/tests/review-actions.test.ts
+COPY patches/release6/app/routes/health.ts /app/app/routes/health.ts
+COPY patches/release6/app/components/FactImport.tsx /app/app/components/FactImport.tsx
+COPY patches/release6/app/components/Workspace.tsx /app/app/components/Workspace.tsx
+COPY patches/release6/app/core/workflow-ui.ts /app/app/core/workflow-ui.ts
+COPY patches/release6/app/core/catalogue.ts /app/app/core/catalogue.ts
+COPY patches/release6/app/core/types.ts /app/app/core/types.ts
+COPY patches/release6/app/core/fact-import.ts /app/app/core/fact-import.ts
+COPY patches/release6/app/core/ui.server.ts /app/app/core/ui.server.ts
+COPY patches/release6/app/core/content-policy.ts /app/app/core/content-policy.ts
+COPY patches/release6/app/core/job-revision.ts /app/app/core/job-revision.ts
+COPY patches/release6/app/core/job-feedback.ts /app/app/core/job-feedback.ts
+COPY patches/release6/app/core/subsection-guide.ts /app/app/core/subsection-guide.ts
+COPY patches/release6/app/core/generation.server.ts /app/app/core/generation.server.ts
+COPY patches/release6/app/core/service.server.ts /app/app/core/service.server.ts
+COPY patches/release6/tests/core.test.ts /app/tests/core.test.ts
+COPY patches/release6/tests/job-feedback.test.ts /app/tests/job-feedback.test.ts
+COPY patches/release6/tests/workflow-lifecycle.test.ts /app/tests/workflow-lifecycle.test.ts
+COPY patches/release6/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
+COPY patches/release6/tests/feedback-regressions.test.ts /app/tests/feedback-regressions.test.ts
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
