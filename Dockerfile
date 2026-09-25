@@ -113,6 +113,18 @@ COPY patches/release8/app/core/service.server.ts /app/app/core/service.server.ts
 COPY patches/release8/app/core/performance.ts /app/app/core/performance.ts
 COPY patches/release8/tests/release8.test.ts /app/tests/release8.test.ts
 COPY patches/release8/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
+COPY patches/release9/app/components/ChangeReview.tsx /app/app/components/ChangeReview.tsx
+COPY patches/release9/app/components/Dashboard.tsx /app/app/components/Dashboard.tsx
+COPY patches/release9/app/components/FixArena.tsx /app/app/components/FixArena.tsx
+COPY patches/release9/app/components/Workspace.tsx /app/app/components/Workspace.tsx
+COPY patches/release9/app/core/analytics.ts /app/app/core/analytics.ts
+COPY patches/release9/app/core/finding-workflow.ts /app/app/core/finding-workflow.ts
+COPY patches/release9/app/core/merchant-copy.ts /app/app/core/merchant-copy.ts
+COPY patches/release9/app/core/subsection-guide.ts /app/app/core/subsection-guide.ts
+COPY patches/release9/app/routes/health.ts /app/app/routes/health.ts
+COPY patches/release9/app/styles.css /app/app/styles.css
+COPY patches/release9/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
+COPY patches/release9/tests/usability9.test.ts /app/tests/usability9.test.ts
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
