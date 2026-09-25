@@ -21,4 +21,6 @@
 ## Verification
 196 unit/integration tests; TypeScript, ESLint and production build. Browser regression covers filtering, automatic job refresh, source-backed CSV facts, approval groups, dashboard navigation, imported URL removal and redirect selection, and authenticated iframe polling with outage recovery. Shopify component validator could not resolve its injected preact/jsx-runtime dependency; normal project typechecking succeeds.
 
-Deployment: release8 overlays after release7. No database migration and no bulk merchant content approval. Health marker: 2026-09-25-dashboard-8.
+Deployment: release8 overlays after release7. No database migration and no bulk merchant content approval. Health marker: 2026-09-25-dashboard-8.1.
+
+8.1: Keep only the newest audit’s findings in browser responses; historical audits carry scores and dates for trends without repeating large issue lists. Add direct dashboard links to URL management and speed results.

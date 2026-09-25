@@ -131,7 +131,7 @@ export async function loadUI(request: Request) {
     observations,
     metrics,
     reports,
-    audits:audits.map(a=>({...a,issues:JSON.stringify(jsonList(a.issues).filter(i=>!i||typeof i!=='object'||!('code' in i)||i.code!=='reported-404'||('resourceId' in i&&(settings(store.settings).reportedPaths||[]).some(p=>i.resourceId==='reported:'+p)))),coverage:JSON.stringify(jsonObject(a.coverage))})),
+    audits:audits.map((a,index)=>index>0?{...a,issues:'[]',coverage:'{}'}:({...a,issues:JSON.stringify(jsonList(a.issues).filter(i=>!i||typeof i!=='object'||!('code' in i)||i.code!=='reported-404'||('resourceId' in i&&(settings(store.settings).reportedPaths||[]).some(p=>i.resourceId==='reported:'+p)))),coverage:JSON.stringify(jsonObject(a.coverage))})),
     credentialNames: Object.keys(keys).filter((k) => Boolean(keys[k])),
   };
 }
