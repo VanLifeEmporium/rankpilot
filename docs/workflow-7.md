@@ -21,4 +21,4 @@ Unit/integration tests cover product-versus-article read paths, display normaliz
 
 These are controlled local tests, not an authenticated production Shopify session. Access to the live Shopify admin remains blocked by its sign-in challenge. The precise historical product response cannot be inspected from here; explicit stored-field reads address the identified resource-path difference and exact-field diagnostics make remaining discrepancies observable. Do not claim a production merchant workflow has been personally verified or guarantee Shopify response times.
 
-Deployment: append release7 overlays after release6 in the existing Docker build. No schema migration, provider generation request or bulk merchant approval is performed by deployment. Release health marker: 2026-09-25-workflow-7.
+Deployment: append release7 overlays after release6 in the existing Docker build. No schema migration, provider generation request or bulk merchant approval is performed by deployment. Release health marker: 2026-09-25-workflow-7.1.

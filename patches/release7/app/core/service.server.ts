@@ -568,7 +568,7 @@ export async function queueSavedChecks(storeId:string) {
  const rows=await prisma.change.findMany({where:{storeId,status:'verification_failed',approvedBy:{not:null},feature:{notIn:['draft','redirect']}},take:25});
  for(const row of rows){
   const job=await prisma.job.findUnique({where:{dedup:`${storeId}:apply:${row.id}`}});
-  if(!job || !['failed','completed'].includes(job.status))continue;
+  if(!job || job.status!=='failed')continue;
   const payload=JSON.parse(job.payload);
   if(payload.verificationPass===7)continue;
   await prisma.$transaction(async tx=>{
