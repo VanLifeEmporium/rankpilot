@@ -69,6 +69,29 @@ COPY patches/release6/tests/job-feedback.test.ts /app/tests/job-feedback.test.ts
 COPY patches/release6/tests/workflow-lifecycle.test.ts /app/tests/workflow-lifecycle.test.ts
 COPY patches/release6/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
 COPY patches/release6/tests/feedback-regressions.test.ts /app/tests/feedback-regressions.test.ts
+COPY patches/release7/app/components/BatchReview.tsx /app/app/components/BatchReview.tsx
+COPY patches/release7/app/components/ChangeValues.tsx /app/app/components/ChangeValues.tsx
+COPY patches/release7/app/components/FactImport.tsx /app/app/components/FactImport.tsx
+COPY patches/release7/app/components/SectionHeading.tsx /app/app/components/SectionHeading.tsx
+COPY patches/release7/app/components/Workspace.tsx /app/app/components/Workspace.tsx
+COPY patches/release7/app/core/finding-workflow.ts /app/app/core/finding-workflow.ts
+COPY patches/release7/app/core/job-feedback.ts /app/app/core/job-feedback.ts
+COPY patches/release7/app/core/live-workspace.ts /app/app/core/live-workspace.ts
+COPY patches/release7/app/core/merchant-copy.ts /app/app/core/merchant-copy.ts
+COPY patches/release7/app/core/section-guide.ts /app/app/core/section-guide.ts
+COPY patches/release7/app/core/service.server.ts /app/app/core/service.server.ts
+COPY patches/release7/app/core/shopify-api.server.ts /app/app/core/shopify-api.server.ts
+COPY patches/release7/app/core/subsection-guide.ts /app/app/core/subsection-guide.ts
+COPY patches/release7/app/core/ui.server.ts /app/app/core/ui.server.ts
+COPY patches/release7/app/core/workflow-ui.ts /app/app/core/workflow-ui.ts
+COPY patches/release7/app/routes/app.live-state.ts /app/app/routes/app.live-state.ts
+COPY patches/release7/app/routes/app.tsx /app/app/routes/app.tsx
+COPY patches/release7/app/routes/health.ts /app/app/routes/health.ts
+COPY patches/release7/tests/feedback-regressions.test.ts /app/tests/feedback-regressions.test.ts
+COPY patches/release7/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
+COPY patches/release7/tests/release5-ui.test.ts /app/tests/release5-ui.test.ts
+COPY patches/release7/tests/retest7.test.ts /app/tests/retest7.test.ts
+COPY patches/release7/tests/workflow-lifecycle.test.ts /app/tests/workflow-lifecycle.test.ts
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
