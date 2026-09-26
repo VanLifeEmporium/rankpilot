@@ -235,6 +235,7 @@ COPY patches/release13/tests/provider13.test.ts /app/tests/provider13.test.ts
 COPY patches/release13/tests/workflow-lifecycle.test.ts /app/tests/workflow-lifecycle.test.ts
 COPY patches/release13/tests/generation.test.ts /app/tests/generation.test.ts
 COPY patches/release14/ /app/
+COPY patches/release142/ /app/
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
