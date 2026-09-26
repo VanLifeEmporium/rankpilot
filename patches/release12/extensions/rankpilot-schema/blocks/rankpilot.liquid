@@ -1,0 +1,117 @@
+{% assign rp_namespace = block.settings.metafield_namespace %}
+{% assign rp_faqs = product.metafields[rp_namespace].faqs.value %}
+{% if request.page_type == 'product' and rp_faqs != blank and block.settings.show_faqs %}
+<section id="rankpilot-faqs" aria-labelledby="rankpilot-faq-heading" style="max-width:960px;margin:32px auto;padding:24px">
+  <h2 id="rankpilot-faq-heading">{{ 'rankpilot.faq_heading' | t }}</h2>
+  {% for faq in rp_faqs %}
+    <details><summary>{{ faq.question | escape }}</summary><p>{{ faq.answer | escape }}</p></details>
+  {% endfor %}
+</section>
+{% endif %}
+<script type="application/json" id="rankpilot-input">
+{
+ "pageType": {{ request.page_type | json }},
+ "url": {{ canonical_url | json | replace: '</', '<\/' }},
+ "root": {{ shop.url | json | replace: '</', '<\/' }},
+ "shop": {{ shop.name | json | replace: '</', '<\/' }},
+ "title": {{ page_title | json | replace: '</', '<\/' }},
+ "description": {{ page_description | json | replace: '</', '<\/' }},
+ "showFaqs": {{ block.settings.show_faqs | json }},
+ "faqs": {{ rp_faqs | default: false | json | replace: '</', '<\/' }},
+ "policiesVerified": {{ block.settings.policies_verified | json }},
+ "shippingRate": {{ block.settings.shipping_rate | json }},
+ "handlingMin": {{ block.settings.handling_min | json }},
+ "handlingMax": {{ block.settings.handling_max | json }},
+ "transitMin": {{ block.settings.transit_min | json }},
+ "transitMax": {{ block.settings.transit_max | json }},
+ "returnDays": {{ block.settings.return_days | json }},
+ "returnUrl": {{ block.settings.return_url | json }},
+ "returnFees": {{ block.settings.return_fees | json }},
+ "returnMethod": {{ block.settings.return_method | json }},
+ "currency": {{ cart.currency.iso_code | json }},
+ "product": {% if request.page_type == 'product' %}{
+   "brand": {% if block.settings.vendor_is_brand and product.vendor != blank %}{{ product.vendor | json | replace: '</', '<\/' }}{% else %}null{% endif %},
+   "name": {{ product.title | json | replace: '</', '<\/' }},
+   "description": {{ product.description | strip_html | json | replace: '</', '<\/' }},
+   "image": {% if product.featured_image %}{{ product.featured_image | image_url: width: 1600 | prepend: 'https:' | json }}{% else %}null{% endif %},
+   "offers": [{% for variant in product.variants limit: 50 %}{"@type":"Offer","sku":{{ variant.sku | json | replace: '</', '<\/' }},"price":{{ variant.price | divided_by: 100.0 | json }},"availability":"https://schema.org/{% if variant.available %}InStock{% else %}OutOfStock{% endif %}","url":{{ shop.url | append: variant.url | json | replace: '</', '<\/' }}}{% unless forloop.last %},{% endunless %}{% endfor %}]
+ }{% else %}null{% endif %},
+ "collection": {% if request.page_type == 'collection' and block.settings.collection_schema %}{"name":{{ collection.title | json | replace: '</', '<\/' }},"items":[{% for item in collection.products limit: 50 %}{"@type":"ListItem","position":{{ forloop.index }},"name":{{ item.title | json | replace: '</', '<\/' }},"url":{{ shop.url | append: item.url | json | replace: '</', '<\/' }}}{% unless forloop.last %},{% endunless %}{% endfor %}]}{% else %}null{% endif %},
+ "article": {% if request.page_type == 'article' %}{"headline":{{ article.title | json | replace: '</', '<\/' }},"author":{"@type":"{% if article.author == shop.name %}Organization{% else %}Person{% endif %}","name":{{ article.author | json | replace: '</', '<\/' }}},"datePublished":{{ article.published_at | date: '%Y-%m-%dT%H:%M:%S%z' | json }},"dateModified":{{ article.updated_at | date: '%Y-%m-%dT%H:%M:%S%z' | json }}}{% else %}null{% endif %}
+}
+</script>
+<script>
+(() => {
+  const input = document.getElementById('rankpilot-input');
+  if (!input) return;
+  let data; try { data = JSON.parse(input.textContent); } catch { return; }
+  const existing = () => {
+    const types = new Set();
+    const visit = value => {
+      if (Array.isArray(value)) { value.forEach(visit); return; }
+      if (!value || typeof value !== 'object') return;
+      if (value['@type']) [value['@type']].flat().forEach(type => types.add(type));
+      Object.values(value).forEach(value => { if (typeof value === 'object') visit(value); });
+    };
+    document.querySelectorAll('script[type="application/ld+json"]:not([data-rankpilot])').forEach(script => { try { visit(JSON.parse(script.textContent)); } catch {} });
+    return types;
+  };
+  const render = () => {
+    const found = existing();
+    const nodes = [];
+    const add = node => { if (!found.has(node['@type'])) nodes.push(node); };
+    if (data.pageType === 'index') {
+      add({'@type':'Organization','@id':data.root+'/#organisation',name:data.shop,url:data.root});
+      add({'@type':'WebSite','@id':data.root+'/#website',name:data.shop,url:data.root});
+    }
+    if (data.pageType !== 'index') add({'@type':'BreadcrumbList',itemListElement:[{'@type':'ListItem',position:1,name:data.shop,item:data.root},{'@type':'ListItem',position:2,name:data.title,item:data.url}]});
+    if (data.product && data.currency === 'GBP') {
+      const offers = data.product.offers.map(offer => {
+        const o = {...offer,priceCurrency:'GBP'};
+        const numbers = [data.shippingRate,data.handlingMin,data.handlingMax,data.transitMin,data.transitMax,data.returnDays];
+        if (data.policiesVerified && numbers.every(n => typeof n === 'number' && n >= 0) && data.handlingMax >= data.handlingMin && data.transitMax >= data.transitMin) {
+          o.shippingDetails = {'@type':'OfferShippingDetails',shippingDestination:{'@type':'DefinedRegion',addressCountry:'GB'},shippingRate:{'@type':'MonetaryAmount',value:data.shippingRate,currency:'GBP'},deliveryTime:{'@type':'ShippingDeliveryTime',handlingTime:{'@type':'QuantitativeValue',minValue:data.handlingMin,maxValue:data.handlingMax,unitCode:'DAY'},transitTime:{'@type':'QuantitativeValue',minValue:data.transitMin,maxValue:data.transitMax,unitCode:'DAY'}}};
+          if (data.returnUrl && /^https:\/\//.test(data.returnUrl)) o.hasMerchantReturnPolicy = {'@type':'MerchantReturnPolicy',applicableCountry:'GB',returnPolicyCategory:'https://schema.org/MerchantReturnFiniteReturnWindow',merchantReturnDays:data.returnDays,merchantReturnLink:data.returnUrl,returnFees:'https://schema.org/'+data.returnFees,returnMethod:'https://schema.org/'+data.returnMethod};
+        }
+        return o;
+      });
+      add({'@type':'Product','@id':data.url+'#product',name:data.product.name,description:data.product.description,image:data.product.image,url:data.url,offers,...(data.product.brand?{brand:{'@type':'Brand',name:data.product.brand}}:{})});
+    }
+    if (data.collection && data.collection.items.length) add({'@type':'ItemList',name:data.collection.name,itemListElement:data.collection.items});
+    if (data.article) add({'@type':'Article',...data.article,mainEntityOfPage:data.url,publisher:{'@id':data.root+'/#organisation'}});
+    if (data.pageType === 'product' && data.showFaqs && document.getElementById('rankpilot-faqs') && Array.isArray(data.faqs) && data.faqs.length) add({'@type':'FAQPage',mainEntity:data.faqs.filter(q=>q.question&&q.answer).map(q=>({'@type':'Question',name:q.question,acceptedAnswer:{'@type':'Answer',text:q.answer}}))});
+    let script = document.querySelector('script[data-rankpilot]');
+    const body = JSON.stringify({'@context':'https://schema.org','@graph':nodes});
+    if (script && script.textContent === body) return;
+    if (!script) { script=document.createElement('script');script.type='application/ld+json';script.dataset.rankpilot='true';document.head.appendChild(script); }
+    script.textContent=body;
+    if (data.description && !document.querySelector('meta[name="description"]')) {const meta=document.createElement('meta');meta.name='description';meta.content=data.description;meta.dataset.rankpilot='true';document.head.appendChild(meta);}
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded',render,{once:true}); else render();
+  const observer = new MutationObserver(records => {if(records.some(r=>[...r.addedNodes,...r.removedNodes].some(n=>n.nodeType===1&&!n.hasAttribute('data-rankpilot')&&(n.matches('script[type="application/ld+json"]')||n.querySelector('script[type="application/ld+json"]'))))) render();});
+  observer.observe(document.documentElement,{subtree:true,childList:true});
+})();
+</script>
+{% schema %}
+{
+ "name":"RankPilot schema",
+ "target":"body",
+ "settings":[
+  {"type":"checkbox","id":"collection_schema","label":"Add missing collection list schema","info":"Uses up to 50 current collection products. Existing theme ItemList markup takes priority.","default":false},
+  {"type":"paragraph","content":"Existing theme and Judge.me schema takes priority. This embed does not generate ratings. Only enable policy data after checking it applies to every product."},
+  {"type":"text","id":"metafield_namespace","label":"RankPilot metafield namespace","info":"Copy the app--NUMBER namespace shown in RankPilot Settings after the first FAQ is applied."},
+  {"type":"checkbox","id":"vendor_is_brand","label":"I verified Shopify vendors are actual brands","default":false},
+  {"type":"checkbox","id":"show_faqs","label":"Show approved product FAQs","default":true},
+  {"type":"checkbox","id":"policies_verified","label":"I verified these policies for every product","default":false},
+  {"type":"number","id":"shipping_rate","label":"UK shipping rate (GBP)"},
+  {"type":"number","id":"handling_min","label":"Minimum handling days"},
+  {"type":"number","id":"handling_max","label":"Maximum handling days"},
+  {"type":"number","id":"transit_min","label":"Minimum transit days"},
+  {"type":"number","id":"transit_max","label":"Maximum transit days"},
+  {"type":"number","id":"return_days","label":"Return window in days"},
+  {"type":"url","id":"return_url","label":"Verified returns policy URL"},
+  {"type":"select","id":"return_fees","label":"Return fees","options":[{"value":"FreeReturn","label":"Free returns"},{"value":"ReturnFeesCustomerResponsibility","label":"Customer pays return costs"}],"default":"ReturnFeesCustomerResponsibility"},
+  {"type":"select","id":"return_method","label":"Return method","options":[{"value":"ReturnByMail","label":"By post"},{"value":"ReturnInStore","label":"In store"}],"default":"ReturnByMail"}
+ ]
+}
+{% endschema %}

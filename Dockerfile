@@ -174,6 +174,35 @@ COPY patches/release11/tests/proposal-repair.test.ts /app/tests/proposal-repair.
 COPY patches/release11/tests/review-actions.test.ts /app/tests/review-actions.test.ts
 COPY patches/release11/tests/workflow-lifecycle.test.ts /app/tests/workflow-lifecycle.test.ts
 COPY patches/release11/scripts/worker.ts /app/scripts/worker.ts
+COPY patches/release12/app/components/ChangeImpact.tsx /app/app/components/ChangeImpact.tsx
+COPY patches/release12/app/components/ChangeReview.tsx /app/app/components/ChangeReview.tsx
+COPY patches/release12/app/components/Dashboard.tsx /app/app/components/Dashboard.tsx
+COPY patches/release12/app/components/FixArena.tsx /app/app/components/FixArena.tsx
+COPY patches/release12/app/components/ScoreBoard.tsx /app/app/components/ScoreBoard.tsx
+COPY patches/release12/app/components/SourceSuggestions.tsx /app/app/components/SourceSuggestions.tsx
+COPY patches/release12/app/components/Workspace.tsx /app/app/components/Workspace.tsx
+COPY patches/release12/app/core/generation.server.ts /app/app/core/generation.server.ts
+COPY patches/release12/app/core/indexation.server.ts /app/app/core/indexation.server.ts
+COPY patches/release12/app/core/integrations.server.ts /app/app/core/integrations.server.ts
+COPY patches/release12/app/core/link-intelligence.ts /app/app/core/link-intelligence.ts
+COPY patches/release12/app/core/live-workspace.ts /app/app/core/live-workspace.ts
+COPY patches/release12/app/core/measurement.server.ts /app/app/core/measurement.server.ts
+COPY patches/release12/app/core/service.server.ts /app/app/core/service.server.ts
+COPY patches/release12/app/core/shopify-api.server.ts /app/app/core/shopify-api.server.ts
+COPY patches/release12/app/core/source-drafts.ts /app/app/core/source-drafts.ts
+COPY patches/release12/app/core/store-score.ts /app/app/core/store-score.ts
+COPY patches/release12/app/core/suggestions.server.ts /app/app/core/suggestions.server.ts
+COPY patches/release12/app/core/types.ts /app/app/core/types.ts
+COPY patches/release12/app/core/ui-data.server.ts /app/app/core/ui-data.server.ts
+COPY patches/release12/app/core/ui.server.ts /app/app/core/ui.server.ts
+COPY patches/release12/app/routes/app.resource.ts /app/app/routes/app.resource.ts
+COPY patches/release12/app/routes/health.ts /app/app/routes/health.ts
+COPY patches/release12/app/styles.css /app/app/styles.css
+COPY patches/release12/tests/backlog12.test.ts /app/tests/backlog12.test.ts
+COPY patches/release12/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
+COPY patches/release12/tests/generation.test.ts /app/tests/generation.test.ts
+COPY patches/release12/tests/indexation12.test.ts /app/tests/indexation12.test.ts
+COPY patches/release12/extensions/rankpilot-schema/blocks/rankpilot.liquid /app/extensions/rankpilot-schema/blocks/rankpilot.liquid
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
