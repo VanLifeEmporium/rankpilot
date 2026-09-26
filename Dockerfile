@@ -136,6 +136,44 @@ COPY patches/release10/app/core/remove-link.ts /app/app/core/remove-link.ts
 COPY patches/release10/app/core/catalogue.ts /app/app/core/catalogue.ts
 COPY patches/release10/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
 COPY patches/release10/tests/fixes10.test.ts /app/tests/fixes10.test.ts
+COPY patches/release11/app/components/BatchReview.tsx /app/app/components/BatchReview.tsx
+COPY patches/release11/app/components/ChangeReview.tsx /app/app/components/ChangeReview.tsx
+COPY patches/release11/app/components/Dashboard.tsx /app/app/components/Dashboard.tsx
+COPY patches/release11/app/components/FixArena.tsx /app/app/components/FixArena.tsx
+COPY patches/release11/app/components/TechnicalTools.tsx /app/app/components/TechnicalTools.tsx
+COPY patches/release11/app/components/Workspace.tsx /app/app/components/Workspace.tsx
+COPY patches/release11/app/core/broken-url.ts /app/app/core/broken-url.ts
+COPY patches/release11/app/core/catalogue.ts /app/app/core/catalogue.ts
+COPY patches/release11/app/core/content-policy.ts /app/app/core/content-policy.ts
+COPY patches/release11/app/core/crawl.server.ts /app/app/core/crawl.server.ts
+COPY patches/release11/app/core/dashboard.ts /app/app/core/dashboard.ts
+COPY patches/release11/app/core/generation.server.ts /app/app/core/generation.server.ts
+COPY patches/release11/app/core/job-feedback.ts /app/app/core/job-feedback.ts
+COPY patches/release11/app/core/link-diagnosis.ts /app/app/core/link-diagnosis.ts
+COPY patches/release11/app/core/merchant-copy.ts /app/app/core/merchant-copy.ts
+COPY patches/release11/app/core/proposal-repair.server.ts /app/app/core/proposal-repair.server.ts
+COPY patches/release11/app/core/proposal-value.ts /app/app/core/proposal-value.ts
+COPY patches/release11/app/core/remove-link.ts /app/app/core/remove-link.ts
+COPY patches/release11/app/core/search-copy.ts /app/app/core/search-copy.ts
+COPY patches/release11/app/core/service.server.ts /app/app/core/service.server.ts
+COPY patches/release11/app/core/shopify-api.server.ts /app/app/core/shopify-api.server.ts
+COPY patches/release11/app/core/subsection-guide.ts /app/app/core/subsection-guide.ts
+COPY patches/release11/app/core/technical-audit.ts /app/app/core/technical-audit.ts
+COPY patches/release11/app/core/types.ts /app/app/core/types.ts
+COPY patches/release11/app/core/ui-data.server.ts /app/app/core/ui-data.server.ts
+COPY patches/release11/app/core/ui.server.ts /app/app/core/ui.server.ts
+COPY patches/release11/app/core/visibility-score.ts /app/app/core/visibility-score.ts
+COPY patches/release11/app/routes/health.ts /app/app/routes/health.ts
+COPY patches/release11/app/styles.css /app/app/styles.css
+COPY patches/release11/tests/backlog11.test.ts /app/tests/backlog11.test.ts
+COPY patches/release11/tests/feedback-regressions.test.ts /app/tests/feedback-regressions.test.ts
+COPY patches/release11/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
+COPY patches/release11/tests/generation.test.ts /app/tests/generation.test.ts
+COPY patches/release11/tests/link-verification11.test.ts /app/tests/link-verification11.test.ts
+COPY patches/release11/tests/proposal-repair.test.ts /app/tests/proposal-repair.test.ts
+COPY patches/release11/tests/review-actions.test.ts /app/tests/review-actions.test.ts
+COPY patches/release11/tests/workflow-lifecycle.test.ts /app/tests/workflow-lifecycle.test.ts
+COPY patches/release11/scripts/worker.ts /app/scripts/worker.ts
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
