@@ -1,0 +1,8 @@
+# Guided link fixes and health scores — 26 September 2026
+
+- The fix arena resolves the broken destination from the finding and pre-fills the current URL. The destination defaults to / (homepage).
+- Apply update is explicit approval. It reuses change records, the approval/worker pipeline, conflict protection, verification and undo history. The older technical tools form uses the same direct application action.
+- Delete removes matching anchors from supported editable product, collection, article or page descriptions, preserving their contents. Unrelated links remain intact. A missing historical URL can instead be deleted from tracking, explicitly labelled; no live products/pages are deleted. Theme/navigation links without a matching editable anchor are refused with an explanation.
+- Product, collection and blog tiles show catalogue health /100 using the existing catalogue audit formula on each resource family. They display passed/total checks and explain scope. The former number was the proportion of pages without any priority findings, which collapsed toward zero when most pages had one warning. Live links and speed remain separate dashboard findings.
+
+Validation: 205 unit tests, TypeScript, ESLint and production build passed. Local browser regression passed dashboard review opening, prefilled address/homepage default, direct redirect approval/application, tracking deletion, exact content-link deletion preserving text/other links, /100 tiles, generation completion, ready-fix acceptance, scrolling, settings and reporting. Demo fixtures do not establish live Shopify write results or provider latency. Shopify component validator was unavailable due to its missing preact dependency; project checks passed. No database migration required.

@@ -125,6 +125,17 @@ COPY patches/release9/app/routes/health.ts /app/app/routes/health.ts
 COPY patches/release9/app/styles.css /app/app/styles.css
 COPY patches/release9/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
 COPY patches/release9/tests/usability9.test.ts /app/tests/usability9.test.ts
+COPY patches/release10/app/components/FixArena.tsx /app/app/components/FixArena.tsx
+COPY patches/release10/app/components/Dashboard.tsx /app/app/components/Dashboard.tsx
+COPY patches/release10/app/components/TechnicalTools.tsx /app/app/components/TechnicalTools.tsx
+COPY patches/release10/app/routes/health.ts /app/app/routes/health.ts
+COPY patches/release10/app/core/broken-url.ts /app/app/core/broken-url.ts
+COPY patches/release10/app/core/service.server.ts /app/app/core/service.server.ts
+COPY patches/release10/app/core/ui.server.ts /app/app/core/ui.server.ts
+COPY patches/release10/app/core/remove-link.ts /app/app/core/remove-link.ts
+COPY patches/release10/app/core/catalogue.ts /app/app/core/catalogue.ts
+COPY patches/release10/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
+COPY patches/release10/tests/fixes10.test.ts /app/tests/fixes10.test.ts
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
