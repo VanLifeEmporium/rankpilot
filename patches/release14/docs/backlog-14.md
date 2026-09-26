@@ -1,10 +1,12 @@
-# Release 14 — operability and evidence safeguards
+# Release 14.1 — operability and evidence safeguards
 
 ## Why this release
 
 The release-13 audit found that the product could not be used reliably in Shopify's constrained iframe. The earlier tests did not reproduce that host constraint and did not load the real Polaris script. In particular, the indexation form posted to `/app`, whose parent route had no POST action. That 405 was reproduced before changing the code.
 
 ## Changes
+
+- Completed background draft/link jobs automatically open their single proposal in the shared approval screen. Local progress remains visible, and generation never applies the proposal. The browser regression verifies completion-to-review without refreshing.
 
 - Parent route accepts actions; dashboard forms explicitly target the index action. Indexation stays in-app, reports progress after each saved URL, resumes unfinished batches and schedules a read-only URL recheck after an accepted write. Unknown URLs are not counted as failures.
 - Natural document scrolling replaces the fixed-height workspace scroll trap. Real Polaris iframe tests exercise search, selection, details, dirty-modal cancellation, visible save buttons, wheel/End scrolling and first-click indexation at 1024×768, 1280×800 and 1440×900 with a 910×713 frame. This does not pretend to implement a nonexistent public App Bridge resize API.

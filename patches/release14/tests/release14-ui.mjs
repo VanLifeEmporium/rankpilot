@@ -35,6 +35,22 @@ try {
  await page.goto('http://localhost:3016/app');
  const cookie=(await context.cookies()).find(c=>c.name==='rankpilot_demo');
  const storeId=await createCookie('rankpilot_demo',{secrets:[env.SESSION_SECRET || 'local-demo-only']}).parse('rankpilot_demo='+cookie.value);
+ const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',Buffer.from(env.ENCRYPTION_KEY,'hex'),iv);
+ const encrypted=Buffer.concat([cipher.update(JSON.stringify({openaiKey:'local-unused-fixture'}),'utf8'),cipher.final()]);
+ const fixtureCredential=['v1',iv.toString('base64'),cipher.getAuthTag().toString('base64'),encrypted.toString('base64')].join('.');
+ await db.store.update({where:{id:storeId},data:{credentials:fixtureCredential}});
+ // Main action fetcher: a finished background draft opens its review without refresh.
+ await page.goto('http://localhost:3016/app/content');
+ await page.getByRole('button',{name:'Create draft',exact:true}).first().click();
+ await expect.poll(()=>db.job.count({where:{storeId,kind:'draft',status:'queued'}})).toBeGreaterThan(0);
+ const draftJob=await db.job.findFirstOrThrow({where:{storeId,kind:'draft',status:'queued'},orderBy:{createdAt:'desc'}});
+ const source=await db.resource.findFirstOrThrow({where:{storeId,kind:'product'}});
+ const resource=await db.resource.create({data:{storeId,remoteId:'draft-'+draftJob.id,kind:'article',title:'Fixture draft review',handle:'fixture-draft-review',payload:JSON.stringify({...JSON.parse(source.payload),title:'Fixture draft review',published:false,descriptionHtml:'<p>A locally generated test draft.</p>'})}});
+ const preview=await db.change.create({data:{storeId,resourceId:resource.id,feature:'draft',before:'null',after:resource.payload,reasons:JSON.stringify(['Reviewed against catalogue sources. Accept to create an unpublished Shopify article.']),blockers:'[]'}});
+ await db.job.update({where:{id:draftJob.id},data:{status:'completed',payload:JSON.stringify({...JSON.parse(draftJob.payload),result:[{changeId:preview.id,message:'Article preview ready.'}]})}});
+ await expect(page.locator('dialog[open]').filter({has:page.getByRole('button',{name:'Approve demo change',exact:true})})).toBeVisible({timeout:15000});
+ expect((await db.change.findUniqueOrThrow({where:{id:preview.id}})).status).toBe('pending');
+ console.log('PASS background draft completion automatically opens approval review without publishing');
  // Exercise real external SDK code in a constrained iframe. Store remains demo:
  // no Shopify, Google or AI account is contacted or impersonated.
  await context.route('http://localhost:3016/app**',async r=>{const response=await r.fetch();const headers={...response.headers()};delete headers['content-security-policy'];delete headers['x-frame-options'];await r.fulfill({response,headers});});

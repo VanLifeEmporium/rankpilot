@@ -195,17 +195,22 @@ export default function Workspace() {
   const requestedJob = d.jobs.find(j => j.id === generation.data?.jobId);
   const jobResults: {changeId?:string;message?:string;error?:string}[] = requestedJob?.status === "completed" ? readJobResults(requestedJob) : [];
   const generatedChangeId = generation.data?.changeId || (jobResults.length === 1 ? jobResults[0]?.changeId : undefined);
+  const actionJob = d.jobs.find(j => j.id === fetcher.data?.jobId);
+  const actionResults = actionJob?.status === "completed" ? readJobResults(actionJob) : [];
+  const actionChangeId = actionResults.length === 1 ? actionResults[0]?.changeId : undefined;
+  const actionMessage = actionJob ? jobMessage(actionJob, d.changes) : fetcher.data?.message;
+  const actionBusy = fetcher.state !== "idle" || !!actionJob && ["queued", "running"].includes(actionJob.status);
   const generationMessage = requestedJob
     ? jobMessage(requestedJob, d.changes)
     : generation.data?.message;
   useEffect(() => {
     if(generation.state!=="idle" || fetcher.state!=="idle")return;
-    for(const id of [fetcher.data?.changeId,generatedChangeId]) {
+    for(const id of [fetcher.data?.changeId,generatedChangeId,actionChangeId]) {
       if(id && !openedChanges.current.has(id) && d.changes.some(c=>c.id===id)) {
         openedChanges.current.add(id);setFactId("");setReviewId(id);
       }
     }
-  },[generation.state,fetcher.state,fetcher.data?.changeId,generatedChangeId,d.changes]);
+  },[generation.state,fetcher.state,fetcher.data?.changeId,generatedChangeId,actionChangeId,d.changes]);
   const audit = d.audits[0];
   const issues: Issue[] = useMemo(()=>audit ? JSON.parse(audit.issues) : [],[audit]);
   const remainingFixPages=fixGroup?new Set(fixGroup.filter(i=>issues.some(current=>current.resourceId===i.resourceId && (i.feature?current.feature===i.feature:current.code===i.code))).map(i=>i.resourceId)).size:0;
@@ -773,7 +778,7 @@ export default function Workspace() {
                 </span>
               </div>
               <section className="card">
-                <SectionHeading title="Your content plan"/><p role="status">{busy?"Preparing your request…":fetcher.data?.message}</p>
+                <SectionHeading title="Your content plan"/><p role="status">{busy?"Preparing your request…":actionMessage}</p>
                 <p className="muted">
                   Practical questions, useful answers and relevant links back to
                   the shop.
@@ -796,7 +801,7 @@ export default function Workspace() {
                       </p>
                     </div>
                     <Button
-                      disabled={busy}
+                      disabled={actionBusy}
                       onClick={() => submit("draft", { title: t })}
                     >
                       {busy && fetcher.formData?.get("title")===t?"Preparing draft preview…":"Create draft"}
@@ -1400,7 +1405,7 @@ export default function Workspace() {
             preventScrollReset
           >
             <div className="facts-body">
-            <SourceSuggestions key={factResource.id} id={factResource.id} kind={factResource.kind} plan={factResource.plan} busy={busy} feedback={fetcher.data?.message} onAction={submit}/>
+            <SourceSuggestions key={factResource.id} id={factResource.id} kind={factResource.kind} plan={factResource.plan} busy={actionBusy} feedback={actionMessage} onAction={submit}/>
             {factResource.kind==="product"&&<Guidance title="Product facts"/>}<input
               type="hidden"
               name="intent"
