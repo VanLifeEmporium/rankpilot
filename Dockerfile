@@ -203,6 +203,37 @@ COPY patches/release12/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
 COPY patches/release12/tests/generation.test.ts /app/tests/generation.test.ts
 COPY patches/release12/tests/indexation12.test.ts /app/tests/indexation12.test.ts
 COPY patches/release12/extensions/rankpilot-schema/blocks/rankpilot.liquid /app/extensions/rankpilot-schema/blocks/rankpilot.liquid
+COPY patches/release13/app/styles.css /app/app/styles.css
+COPY patches/release13/app/components/ReportPanels.tsx /app/app/components/ReportPanels.tsx
+COPY patches/release13/app/components/SourceSuggestions.tsx /app/app/components/SourceSuggestions.tsx
+COPY patches/release13/app/components/Workspace.tsx /app/app/components/Workspace.tsx
+COPY patches/release13/app/components/ScoreBoard.tsx /app/app/components/ScoreBoard.tsx
+COPY patches/release13/app/components/Dashboard.tsx /app/app/components/Dashboard.tsx
+COPY patches/release13/app/components/ChangeReview.tsx /app/app/components/ChangeReview.tsx
+COPY patches/release13/app/core/ui-data.server.ts /app/app/core/ui-data.server.ts
+COPY patches/release13/app/core/integrations.server.ts /app/app/core/integrations.server.ts
+COPY patches/release13/app/core/merchant-product.ts /app/app/core/merchant-product.ts
+COPY patches/release13/app/core/measurement.server.ts /app/app/core/measurement.server.ts
+COPY patches/release13/app/core/catalogue.ts /app/app/core/catalogue.ts
+COPY patches/release13/app/core/analytics.ts /app/app/core/analytics.ts
+COPY patches/release13/app/core/ui.server.ts /app/app/core/ui.server.ts
+COPY patches/release13/app/core/link-intelligence.ts /app/app/core/link-intelligence.ts
+COPY patches/release13/app/core/visibility-score.ts /app/app/core/visibility-score.ts
+COPY patches/release13/app/core/suggestions.server.ts /app/app/core/suggestions.server.ts
+COPY patches/release13/app/core/service.server.ts /app/app/core/service.server.ts
+COPY patches/release13/app/core/topic-relevance.ts /app/app/core/topic-relevance.ts
+COPY patches/release13/app/core/source-drafts.ts /app/app/core/source-drafts.ts
+COPY patches/release13/app/core/generation.server.ts /app/app/core/generation.server.ts
+COPY patches/release13/app/core/store-score.ts /app/app/core/store-score.ts
+COPY patches/release13/app/core/html-value.ts /app/app/core/html-value.ts
+COPY patches/release13/app/core/provider-health.ts /app/app/core/provider-health.ts
+COPY patches/release13/app/routes/health.ts /app/app/routes/health.ts
+COPY patches/release13/app/routes/app._index.tsx /app/app/routes/app._index.tsx
+COPY patches/release13/tests/feedback-ui.mjs /app/tests/feedback-ui.mjs
+COPY patches/release13/tests/backlog13.test.ts /app/tests/backlog13.test.ts
+COPY patches/release13/tests/provider13.test.ts /app/tests/provider13.test.ts
+COPY patches/release13/tests/workflow-lifecycle.test.ts /app/tests/workflow-lifecycle.test.ts
+COPY patches/release13/tests/generation.test.ts /app/tests/generation.test.ts
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
@@ -210,3 +241,4 @@ RUN mkdir -p /data && chown -R node:node /data /app
 USER node
 EXPOSE 3000
 CMD ["sh", "-c", "npm run setup && npm run start:all"]
+
