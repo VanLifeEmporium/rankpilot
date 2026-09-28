@@ -238,6 +238,7 @@ COPY patches/release14/ /app/
 COPY patches/release142/ /app/
 COPY patches/release15/ /app/
 COPY patches/release17/ /app/
+COPY patches/release18/ /app/
 RUN npm ci && npx prisma generate && npm run build
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
