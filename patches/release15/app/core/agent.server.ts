@@ -86,8 +86,10 @@ export async function agentContext(request: Request) {
 /** Writes must be same-origin and carry an explicit header (CSRF guard). */
 export function requireAgentWrite(request: Request) {
   if (request.headers.get("x-rankpilot-agent") !== "1") throw new Response("Missing agent header", { status: 400 });
+  // Behind Render's proxy request.url is the internal http address, so compare with the public app URL.
   const origin = request.headers.get("origin");
-  if (origin && origin !== new URL(request.url).origin) throw new Response("Cross-origin request refused", { status: 403 });
+  const expected = new URL(process.env.SHOPIFY_APP_URL || request.url).origin;
+  if (origin && origin !== expected) throw new Response("Cross-origin request refused", { status: 403 });
 }
 
 const text = (html: string) => {
