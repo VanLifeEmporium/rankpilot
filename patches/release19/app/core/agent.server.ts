@@ -79,11 +79,15 @@ export async function exchange(linkToken: string) {
   const claims = await verify(linkToken, "link");
   const { allowed, epoch } = await storeAccess(claims.storeId);
   if (!allowed || claims.epoch !== epoch) throw new Error("Agent access was revoked");
-  if (claims.jti) {
-    const used = await prisma.event.findFirst({ where: { storeId: claims.storeId, message: "Agent link used", detail: { contains: claims.jti } } });
-    if (used) throw new Error("This link has already been used");
-    await log(claims.storeId, "Agent link used", { jti: claims.jti, actor: claims.actor });
+  if (!claims.jti) throw new Error("Invalid agent link");
+  // Release 19: single use is atomic. The first request inserts the link id (primary key);
+  // any concurrent or later request fails on the unique constraint.
+  try {
+    await prisma.webhookReceipt.create({ data: { id: `agent-link:${claims.jti}`, storeId: claims.storeId } });
+  } catch {
+    throw new Error("This link has already been used");
   }
+  await log(claims.storeId, "Agent link used", { jti: claims.jti, actor: claims.actor });
   const session = await new SignJWT({ storeId: claims.storeId, actor: claims.actor, use: "session", epoch })
     .setProtectedHeader({ alg: "HS256" })
     .setAudience("rankpilot-agent")
@@ -92,7 +96,9 @@ export async function exchange(linkToken: string) {
     .sign(secret());
   await log(claims.storeId, "Agent session opened", { actor: claims.actor });
   const secure = String(process.env.SHOPIFY_APP_URL || "").startsWith("https:") ? "; Secure" : "";
-  return `${COOKIE}=${session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_SECONDS}${secure}`;
+  // Release 19: Lax, so the cookie is kept when the link is opened from Shopify admin (a cross-site navigation).
+  // Writes stay protected by the x-rankpilot-agent header and the same-origin check.
+  return `${COOKIE}=${session}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_SECONDS}${secure}`;
 }
 export async function agentContext(request: Request) {
   if (!agentEnabled()) throw new Response("Agent access is switched off.", { status: 403 });

@@ -14,7 +14,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
   if (token) {
     try {
       const cookie = await exchange(token);
-      return new Response(null, { status: 302, headers: { Location: "/agent", "Set-Cookie": cookie, "Referrer-Policy": "no-referrer" } });
+      // Release 19: a 200 page that then navigates. The next request starts from this origin, so the
+      // session cookie is sent even when the link was opened from Shopify admin.
+      return page('<h1>Opening the agent workspace…</h1><p><a href="/agent">Continue to the agent workspace</a></p><meta http-equiv="refresh" content="0;url=/agent">', 200, { "Set-Cookie": cookie });
     } catch {
       return page("<h1>Link expired</h1><p>Open a fresh link from RankPilot › Settings › Agent workspace.</p>", 401);
     }
