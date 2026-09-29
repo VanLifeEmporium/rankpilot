@@ -19,7 +19,6 @@ import { updateInlineAlts } from "./image-content";
 import { createHash, randomUUID } from "node:crypto";
 import prisma from "../db.server";
 import {
-  auditCatalogue,
   cleanTitle,
   extractFacts,
   createCatalogueAuditor,
@@ -456,6 +455,10 @@ export async function approve(storeId: string, id: string, actor: string, expect
   const row = await prisma.change.findFirstOrThrow({ where: { id, storeId } });
   if(expectedVersion && row.updatedAt.toISOString()!==expectedVersion)throw new Error("This preview changed. Review the latest version before accepting.");
   assertSafeCopy(row.feature, JSON.parse(row.before), JSON.parse(row.after), JSON.parse(row.reasons));
+  // Release 19: brand rules and unverified claims apply to every writer (merchant, AI, agent).
+  {const {brandGate}=await import('./brand-rules');const r=await prisma.resource.findFirst({where:{id:row.resourceId,storeId},select:{facts:true}});
+   const problems=brandGate(row.feature,JSON.parse(row.before),JSON.parse(row.after),JSON.parse(r?.facts||'{}'));
+   if(problems.length)throw new Error(`This change breaks the store's content rules: ${problems.join('; ')}. Edit the wording, then approve.`);}
   if (row.status !== "pending")
     throw new Error("This change is no longer awaiting approval");
   if (JSON.parse(row.blockers).length)
