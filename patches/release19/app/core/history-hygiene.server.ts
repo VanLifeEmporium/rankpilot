@@ -78,7 +78,7 @@ export async function driftIssues(storeId: string, given?: { id: string; title: 
   // Newer rows that may have written (verification_failed, apply_failed) or are about to write
   // make an older applied row stale, so they are read too and win the "newest" slot.
   const changes = await prisma.change.findMany({
-    where: { storeId, feature: { in: [...DRIFT_FEATURES, "alt"] }, status: { in: ["applied", "pending", "approved", "applying", "verifying", "verification_failed", "apply_failed", "rolling_back"] } },
+    where: { storeId, feature: { in: [...DRIFT_FEATURES, "alt"] }, status: { in: ["applied", "rollback_failed", "pending", "approved", "applying", "verifying", "verification_failed", "apply_failed", "rolling_back"] } },
     orderBy: { createdAt: "desc" },
   });
   // Release 19: without a list, read only the pages that have changes, not the whole store.
@@ -98,7 +98,8 @@ export async function driftIssues(storeId: string, given?: { id: string; title: 
     if (seen.has(key)) continue;
     seen.add(key);
     // Only the newest change per field counts, and only once it has been applied.
-    if (c.status !== "applied" || c.feature === "alt") continue;
+    // Release 19: a failed undo leaves RankPilot's value as the last applied one.
+    if (!["applied", "rollback_failed"].includes(c.status) || c.feature === "alt") continue;
     const r = byId.get(c.resourceId);
     if (!r) continue;
     const p: Payload = JSON.parse(r.payload);

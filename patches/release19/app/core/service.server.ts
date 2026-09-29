@@ -546,11 +546,10 @@ export async function applyChange(
   if (!compatibleState(actual, before, after, change.feature)) {
     await prisma.change.update({
       where: { id },
-      data: {
-        status: rollback ? "applied" : "conflict",
-        error:
-          "The resource changed after this preview. Refresh and review again.",
-      },
+      // Release 19: a failed undo is shown as "Undo failed", in plain English, instead of staying "Applied".
+      data: rollback
+        ? { status: "rollback_failed", error: "Undo failed: this page was edited in Shopify after RankPilot's change, so undoing it would overwrite the newer edit. Nothing was changed. Edit the page in Shopify, or open the finding and choose Keep Shopify's version." }
+        : { status: "conflict", error: "The page changed in Shopify after this proposal was prepared. Nothing was saved. Prepare a new proposal from the current page." },
     });
     throw new Error("Conflict: refusing to overwrite newer edits");
   }

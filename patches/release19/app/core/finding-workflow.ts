@@ -58,7 +58,13 @@ export function findingAction(i:Issue,resource:{kind:string;facts:string}|undefi
 type Change={id:string;resourceId:string;feature:string;status:string;error?:string|null};
 type Job={id:string;kind:string;status:string;payload:string;error?:string|null};
 export function findingProgress(issue:Issue,changes:Change[],jobs:Job[]) {
- const change=changes.find(c=>c.resourceId===issue.resourceId && c.feature===issue.feature);
+ // Release 19: only a change still in progress belongs to this finding. Applied, rejected, undone or
+ // superseded changes are history; returning them sent the fix dialog to an old review (dead ends,
+ // and "Keep Shopify's version" was unreachable).
+ const OPEN=['pending','approved','applying','verifying','verification_failed','apply_failed','rollback_failed','conflict'];
+ if(issue.code==='changed-outside')return {busy:false,message:'',changeId:undefined,canGenerate:true};
+ const change=changes.find(c=>c.resourceId===issue.resourceId && c.feature===issue.feature && OPEN.includes(c.status));
+ const open=(id?:string)=>id&&changes.some(c=>c.id===id&&OPEN.includes(c.status))?id:undefined;
  const job=jobs.find(j=>{try{const p=JSON.parse(j.payload);return j.kind==='optimise' && p.feature===issue.feature && Array.isArray(p.ids) && p.ids.includes(issue.resourceId);}catch{return false;}});
  if(job && ['queued','running'].includes(job.status)) return {busy:true,message:jobMessage(job),changeId:undefined,canGenerate:false};
  if(change && ['pending','approved','applying','verifying','verification_failed','apply_failed','rollback_failed','conflict'].includes(change.status)) {
@@ -67,7 +73,8 @@ export function findingProgress(issue:Issue,changes:Change[],jobs:Job[]) {
  }
  if(job) {
   const result=jobResults(job).find(r=>r.resourceId===issue.resourceId) || jobResults(job).find(r=>r.changeId && r.changeId===change?.id);
-  return {busy:false,message:result ? resultMessage(result,changes) : jobMessage(job,changes),changeId:result?.changeId,canGenerate:true};
+  return {busy:false,message:result ? resultMessage(result,changes) : jobMessage(job,changes),changeId:open(result?.changeId),canGenerate:true};
  }
- return {busy:false,message:change ? `Previous proposal ${change.status.replaceAll('_',' ')}` : '',changeId:change?.id,canGenerate:true};
+ const last=changes.find(c=>c.resourceId===issue.resourceId && c.feature===issue.feature);
+ return {busy:false,message:last ? `Previous proposal ${last.status==='rolled_back'?'undone':last.status.replaceAll('_',' ')}. You can prepare a new one.` : '',changeId:undefined,canGenerate:true};
 }

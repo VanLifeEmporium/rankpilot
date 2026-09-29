@@ -1427,7 +1427,7 @@ export default function Workspace() {
             <input type="hidden" name="id" value={factResource.id} />
             <label>
               Main phrase shoppers search for
-              <input name="keyword" defaultValue={factResource.plan.savedKeyword||factResource.plan.suggestions.primary} />
+              <input name="keyword" key={factResource.id+":"+(factResource.plan.currentKeyword??"")} defaultValue={factResource.plan.savedKeyword||factResource.plan.currentKeyword||factResource.plan.suggestions.primary} />
             </label>
             <small>{factResource.plan.savedKeyword?"Your saved search phrase. Suggested alternatives appear in the plan below.":factResource.plan.keywordSource}</small>
             {factResource.kind === "product" && (
