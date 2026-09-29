@@ -312,6 +312,11 @@ export async function audit(storeId: string) {
       { shopName: JSON.parse(store.discoveries || "{}").shop?.name || settings(store.settings).titleBrand },
     );
     result.issues.push(...crawl.issues);
+    // Release 19: each rendered page is one more check; a page that renders wrongly is a failed check.
+    const {RENDERED_CODES}=await import('./rendered-page');
+    const renderFailed=new Set(crawl.issues.filter(i=>RENDERED_CODES.has(i.code)&&i.severity!=='notice'&&i.resourceId!=='store').map(i=>i.resourceId)).size;
+    result.checks+=crawl.discoveries.scanned;result.failed+=renderFailed;
+    result.score=result.checks?Math.max(0,Math.round(100*(1-result.failed/result.checks))):0;
     await prisma.store.update({
       where: { id: storeId },
       data: {
