@@ -115,7 +115,7 @@ describe("items 3 and 5: honest scores and real-visitor speed", () => {
     expect(t.parts.map((p) => [p.label, p.weight])).toEqual([["Catalogue checks", 25], ["Mobile speed (single lab sample)", 25], ["Inspected Google index coverage", 30], ["Scanned structured data", 20]]);
     // 98 no longer reads as technical health: 74% index coverage pulls it down.
     expect(t.score).toBe(Math.round((25 * 98 + 30 * 74) / 55));
-    expect(storeScore({ metrics: [], healthScores: {}, observations: [], now }).version).toBe(4);
+    expect(storeScore({ metrics: [], healthScores: {}, observations: [], now }).version).toBe(5);
   });
   it("prefers Chrome UX Report field data over the lab sample", () => {
     const page = parseCrux("Home page", "https://vanlifeemporium.com/", "url", { record: { metrics: { largest_contentful_paint: { percentiles: { p75: 2100 } }, interaction_to_next_paint: { percentiles: { p75: 350 } }, cumulative_layout_shift: { percentiles: { p75: "0.30" } } } } });

@@ -22,6 +22,8 @@ import {
   cleanTitle,
   extractFacts,
   createCatalogueAuditor,
+  createPrescan,
+  type AuditResource,
   keywordFor,
   optimise,
   topics,
@@ -92,7 +94,12 @@ export async function enqueueGeneration(storeId:string, ids:string[], feature:Fe
 /** Release 19: paged catalogue audit. Keeps only slim crawl records (address, title, published) between pages. */
 export async function catalogueAuditPaged(storeId:string){
  const {resourcePages,AUDIT_SELECT,CATALOGUE_KINDS}=await import('./resource-pages.server');
- const auditor=createCatalogueAuditor();
+ // Pass 1: shared FAQ questions and vendor spellings (only short strings are kept).
+ const store=await prisma.store.findUnique({where:{id:storeId}});const cfg=settings(store?.settings||'{}');
+ const prescan=createPrescan({storeName:JSON.parse(store?.discoveries||'{}').shop?.name||cfg.titleBrand||'',deliveryPolicy:!!(cfg.policies?.source&&cfg.policies?.delivery)});
+ for await(const page of resourcePages<AuditResource>({storeId,kind:'product'},{id:true,kind:true,payload:true,title:true}))prescan.add(page);
+ // Pass 2: the checks.
+ const auditor=createCatalogueAuditor(prescan.context());
  const slim:{id:string;title:string;kind:string;handle:string;keyword:string;facts:string;payload:string}[]=[];
  let count=0;
  for await(const page of resourcePages<{id:string;title:string;kind:string;handle:string;keyword:string;facts:string;payload:string}>({storeId,kind:{in:CATALOGUE_KINDS}},AUDIT_SELECT)){
@@ -109,7 +116,7 @@ export async function refreshCatalogueAudit(storeId:string) {
  const hygiene=await import("./history-hygiene.server");
  const drift=await hygiene.driftIssues(storeId);
  const retained=JSON.parse(latest.issues).filter((i:{code:string})=>!catalogueCodes.has(i.code)&&i.code!=='changed-outside');
- await prisma.audit.update({where:{id:latest.id},data:{score:checked.score,aeoScore:checked.aeoScore,resourceCount:resources.length,issues:JSON.stringify([...checked.issues,...drift,...retained]),coverage:JSON.stringify({...JSON.parse(latest.coverage),catalogueRecheckedAt:new Date().toISOString()})}});
+ await prisma.audit.update({where:{id:latest.id},data:{score:checked.score,aeoScore:checked.aeoScore,resourceCount:resources.length,issues:JSON.stringify([...checked.issues,...drift,...retained]),coverage:JSON.stringify({...JSON.parse(latest.coverage),answerReadiness:checked.answerReadiness,catalogueRecheckedAt:new Date().toISOString()})}});
  await recordScore(storeId).catch(error=>log(storeId,"Score snapshot unavailable",{message:(error as Error).message}));
 }
 export function sameField(actual:unknown,expected:unknown):boolean {
@@ -300,7 +307,9 @@ export async function audit(storeId: string) {
     externalLinks: "Not scanned",
     supplierCopy: "Heuristic only",
     score: "Catalogue checks only; not a search-engine ranking score",
-    aeoScore: "Percentage of four core product facts confirmed",
+    // Release 19: Answer readiness (7 shopper questions) replaces the separate aeoScore.
+    answerReadiness: result.answerReadiness,
+    answerMethod: "7 shopper questions: size, material, what is included, weight, care, fit, delivery",
   };
   if (!store.demo) {
     const crawl = await crawlStore(

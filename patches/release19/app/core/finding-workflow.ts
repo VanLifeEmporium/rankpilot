@@ -1,6 +1,6 @@
 import type {Issue,Settings,Facts} from './types';
 import {jobResults,jobMessage,resultMessage} from './job-feedback';
-export const catalogueCodes=new Set(['supplier-markup','missing-meta-title','long-title','duplicate-title','missing-meta-description','long-meta-description','duplicate-meta-description','thin-content','supplier-language','missing-alt','large-image','keyword-cannibalisation','possible-duplicate-product','missing-product-faq','missing-gtin']);
+export const catalogueCodes=new Set(['invalid-gtin','book-without-isbn','gtin-unusual-prefix','vendor-placeholder','vendor-near-duplicate','vendor-store-on-book','vendor-mismatch','answer-missing-size','answer-missing-material','answer-missing-included','answer-missing-weight','answer-missing-care','answer-missing-fit','answer-missing-delivery','supplier-markup','missing-meta-title','long-title','duplicate-title','missing-meta-description','long-meta-description','duplicate-meta-description','thin-content','supplier-language','missing-alt','large-image','keyword-cannibalisation','possible-duplicate-product','missing-product-faq','missing-gtin']);
 export const findingKey=(i:Issue)=>`${i.resourceId}:${i.code}:${i.detail}`;
 export function hasFaqSources(facts:Facts,settings:Settings) {
  return Object.entries(facts).some(([k,f])=>k!=='barcode' && f.confirmed && f.value.trim() && f.source.trim()) || Boolean(settings.policies.source && (settings.policies.delivery || settings.policies.returns));
@@ -26,6 +26,20 @@ export function findingAction(i:Issue,resource:{kind:string;facts:string}|undefi
   'canonical-missing':'Check the theme’s canonical URL output for this template.',
   'canonical-differs':'Check whether the canonical destination is intentional before editing the theme.',
   'http-error':'Check the reported storefront response. Rerun the audit after access or availability is restored.',
+  'invalid-gtin':'Check the barcode printed on the product or in the manufacturer’s specification and correct the variant in Shopify. Never make up a barcode; if there is none, confirm “No manufacturer barcode”.',
+  'book-without-isbn':'Copy the 13-digit ISBN (starting 978 or 979) from the book’s copyright page or back cover into the variant barcode in Shopify.',
+  'gtin-unusual-prefix':'Check with the supplier that this is the manufacturer’s GTIN rather than an internal or in-store number.',
+  'vendor-placeholder':'Set the vendor in Shopify to the manufacturer, or to your store name for own-label products.',
+  'vendor-near-duplicate':'Choose one spelling for this brand and use it on every product (Shopify bulk editor).',
+  'vendor-store-on-book':'Set the vendor to the book’s publisher.',
+  'vendor-mismatch':'If the brand named in the title makes this product, set it as the vendor.',
+  'answer-missing-size':'Add the size in the description or confirm it in Product details. Fill specs for all products can read sizes already in the text.',
+  'answer-missing-material':'Add what it is made from, or confirm Materials in Product details.',
+  'answer-missing-included':'List what comes in the box, or confirm What is included in Product details.',
+  'answer-missing-weight':'Add the weight in the description or confirm it in Product details.',
+  'answer-missing-care':'Add short care or cleaning instructions.',
+  'answer-missing-fit':'Say where it fits: a van locker, shelf, under a seat, or its packed size.',
+  'answer-missing-delivery':'Add delivery information in Settings (store policies) or in the description.',
   'page-not-found':'Open the product in Shopify: check it is Active, available on the Online Store and has at least one image. Set it to Draft until it is ready, then run a fresh audit.',
   'product-schema-missing':'Check the product template in the theme editor and any structured-data app. Shopify themes normally output Product data; restore it rather than adding a second copy.',
   'product-schema-multiple':'Keep one source of Product data: the theme or one app. Remove the duplicate block or app embed, then recheck.',

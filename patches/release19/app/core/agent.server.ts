@@ -152,7 +152,8 @@ export async function overview(storeId: string) {
     release: RELEASE,
     store: store.id,
     domain: store.domain,
-    audit: audit ? { at: audit.createdAt, score: audit.score, aeoScore: audit.aeoScore, pages: audit.resourceCount } : null,
+    // Release 19: one Answer readiness figure; the separate aeoScore is retired.
+    audit: audit ? { at: audit.createdAt, catalogueChecks: audit.score, answerReadiness: JSON.parse(audit.coverage || "{}").answerReadiness ?? null, pages: audit.resourceCount } : null,
     storeScore: score ? JSON.parse(score.payload) : null,
     groups: actionGroups(issues).map((g) => ({ key: g.key, name: findingName(g.code), pages: g.count, occurrences: g.occurrences })),
     changes: Object.fromEntries(counts.map((c) => [c.status, c._count])),

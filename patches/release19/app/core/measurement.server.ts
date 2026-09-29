@@ -1,15 +1,12 @@
 import prisma from '../db.server';
-import {createCatalogueAuditor,type AuditResource} from './catalogue';
 import {storeScore,observedPage} from './store-score';
 import {metricPair} from './analytics';
 export async function recordScore(storeId:string){
  const [audit,observations,metrics,store]=await Promise.all([prisma.audit.findFirst({where:{storeId},orderBy:{createdAt:'desc'}}),prisma.observation.findMany({where:{storeId,createdAt:{gte:new Date(Date.now()-28*86400000)}}}),Promise.all(['gsc','ga4-organic-daily','ai-sampling','pagespeed','indexation'].map(provider=>prisma.metric.findFirst({where:{storeId,provider},orderBy:{period:'desc'}}))).then(xs=>xs.filter(x=>x!==null)),prisma.store.findUniqueOrThrow({where:{id:storeId}})]);
  if(!audit)return;
- // Release 19: per-kind scores read 50 pages at a time instead of loading the whole store.
- const {resourcePages,AUDIT_SELECT}=await import('./resource-pages.server');
+ // Release 19: the Store Score uses the pooled audit figure; per-type scores are display only, so none are recomputed here.
  const healthScores:Record<string,{score:number}|null>={};
- for(const kind of ['product','collection','article']){const auditor=createCatalogueAuditor();let n=0;for await(const page of resourcePages<AuditResource>({storeId,kind},AUDIT_SELECT)){auditor.add(page);n+=page.length;}healthScores[kind]=n?{score:auditor.result().score}:null;}
- const value=storeScore({metrics,technical:audit.score,schemas:JSON.parse(store.discoveries||'{}').schemas,healthScores,observations,now:Date.now()});
+ const value=storeScore({metrics,technical:audit.score,answerReadiness:JSON.parse(audit.coverage||'{}').answerReadiness??null,schemas:JSON.parse(store.discoveries||'{}').schemas,healthScores,observations,now:Date.now()});
  const period=new Date().toISOString();
  const payload=JSON.stringify({...value,checkedAt:new Date().toISOString(),appliedCount:await prisma.change.count({where:{storeId,status:'applied'}})});
  await prisma.metric.upsert({where:{storeId_provider_period:{storeId,provider:'store-score',period}},create:{storeId,provider:'store-score',period,payload},update:{payload}});

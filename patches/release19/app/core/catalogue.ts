@@ -1,6 +1,7 @@
 import { specFacts } from "./spec-extract";
 import { confirmedNoBarcode } from "./finding-state";
 import { blockingMarkup } from "./html-cleanup";
+import { faqQuestionTexts, normaliseQuestion, barcodeProblems, vendorProblems, vendorKey, answeredQuestions, ANSWER_QUESTIONS, type VendorContext } from "./catalogue-checks";
 import {supplierSignals} from './content-policy';
 import { load } from "cheerio";
 import {
@@ -97,8 +98,34 @@ export type AuditResource = {
   keyword: string;
   facts: string;
 };
-export function auditCatalogue(resources: AuditResource[]) {
-  const auditor = createCatalogueAuditor();
+export type AuditContext = { templateQuestions: Set<string>; vendors: VendorContext["vendors"]; storeName: string; deliveryPolicy: boolean };
+/** Release 19: first pass over the catalogue — shared FAQ questions and vendor spellings. */
+export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boolean } = {}) {
+  const questions = new Map<string, number>();
+  const vendors = new Map<string, Map<string, number>>();
+  let products = 0;
+  return {
+    add(resources: AuditResource[]) {
+      for (const r of resources) {
+        if (r.kind !== "product") continue;
+        products++;
+        const p: Payload = JSON.parse(r.payload);
+        for (const q of new Set(faqQuestionTexts(p).map((q) => normaliseQuestion(q, p.title)))) questions.set(q, (questions.get(q) || 0) + 1);
+        const v = (p.vendor || "").trim();
+        if (v) { const k = vendorKey(v); const m = vendors.get(k) || new Map<string, number>(); m.set(v, (m.get(v) || 0) + 1); vendors.set(k, m); }
+      }
+    },
+    context(): AuditContext {
+      // A question on more than 10% of products is a template, not a product-specific FAQ.
+      const templateQuestions = new Set([...questions].filter(([, n]) => products >= 10 && n > products * 0.1).map(([q]) => q));
+      return { templateQuestions, vendors, storeName: opts.storeName || "", deliveryPolicy: !!opts.deliveryPolicy };
+    },
+  };
+}
+export function auditCatalogue(resources: AuditResource[], opts: { storeName?: string; deliveryPolicy?: boolean } = {}) {
+  const prescan = createPrescan(opts);
+  prescan.add(resources);
+  const auditor = createCatalogueAuditor(prescan.context());
   auditor.add(resources);
   return auditor.result();
 }
@@ -108,7 +135,7 @@ export function auditCatalogue(resources: AuditResource[]) {
  */
 /** Short key for a description signature, so long descriptions are not all kept in memory. */
 const sigKey = (s: string) => { if (s.length <= 200) return s; let h = 5381; for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return `${s.length}:${h}:${s.slice(0, 80)}`; };
-export function createCatalogueAuditor() {
+export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: new Set(), vendors: new Map(), storeName: "", deliveryPolicy: false }) {
   const issues: Issue[] = [];
   let count = 0;
   const titles = new Map<string, string>();
@@ -119,6 +146,8 @@ export function createCatalogueAuditor() {
     failed = 0;
   let factsTotal = 0,
     factsPresent = 0;
+  let products_ = 0, answeredTotal = 0;
+  const missingAnswers = new Map<string, { id: string; title: string }[]>();
   const add_ = (resources: AuditResource[]) => {
   for (const r of resources) {
     count++;
@@ -137,7 +166,8 @@ export function createCatalogueAuditor() {
         detail,
         feature,
       });
-      failed++;
+      // Release 19: advisory notices are shown but are not failed checks.
+      if (severity !== "notice") failed++;
     };
     checks += 7;
     const title = p.seo.title || "";
@@ -229,13 +259,22 @@ export function createCatalogueAuditor() {
         factsTotal++;
         if (f[k]?.confirmed && f[k]?.value?.trim() && f[k]?.source?.trim()) factsPresent++;
       }
-      if (!p.faqs?.length && !bodyFaqQuestions(p.descriptionHtml))
+      // Release 19: questions shared by more than 10% of products are a template and do not count.
+      const ownQuestions = faqQuestionTexts(p).filter((q) => !ctx.templateQuestions.has(normaliseQuestion(q, p.title)));
+      if (!ownQuestions.length)
         add(
           "missing-product-faq",
           "notice",
-          "Add answers grounded in verified product facts.",
+          "No product-specific FAQs. Shared template questions do not count. Add answers grounded in confirmed product facts.",
           "faq",
         );
+      for (const b of [...barcodeProblems(p), ...vendorProblems(p, ctx)]) add(b.code, b.severity, b.detail);
+      products_++;
+      const answered = answeredQuestions(p, f, { deliveryPolicy: ctx.deliveryPolicy });
+      for (const q of ANSWER_QUESTIONS) {
+        if (answered[q.key]) { answeredTotal++; continue; }
+        const list = missingAnswers.get(q.key) || []; list.push({ id: r.id, title: r.title }); missingAnswers.set(q.key, list);
+      }
       // Release 18: own-label products the merchant confirmed have no manufacturer barcode are not flagged.
       if (p.variants?.some((v) => !v.barcode) && !confirmedNoBarcode(f))
         add(
@@ -247,17 +286,28 @@ export function createCatalogueAuditor() {
   }
   };
   const result = () => {
+  // Release 19: one grouped finding per missing shopper answer, with the product count.
+  const answerIssues: Issue[] = ANSWER_QUESTIONS.filter((q) => missingAnswers.get(q.key)?.length).map((q) => {
+    const list = missingAnswers.get(q.key)!;
+    return { resourceId: `answers:${q.key}`, title: q.label, code: `answer-missing-${q.key}`, severity: "notice" as const, count: list.length, resourceIds: list.slice(0, 1000).map((x) => x.id),
+      detail: `${list.length} ${list.length === 1 ? "product does" : "products do"} not answer this in the description, confirmed facts or product fields. For example: ${list.slice(0, 5).map((x) => x.title).join(", ")}.` };
+  });
+  const answerReadiness = products_ ? Math.round((100 * answeredTotal) / (products_ * ANSWER_QUESTIONS.length)) : 0;
   issues.sort(
     (a, b) =>
       ({ critical: 0, warning: 1, notice: 2 })[a.severity] -
       { critical: 0, warning: 1, notice: 2 }[b.severity],
   );
   return {
-    issues, checks, failed: Math.min(failed, checks),
+    issues: [...issues, ...answerIssues], checks, failed: Math.min(failed, checks),
     score: count
       ? Math.max(0, Math.round(100 * (1 - Math.min(failed, checks) / checks)))
       : 0,
-    aeoScore: factsTotal ? Math.round((factsPresent / factsTotal) * 100) : 0,
+    // Release 19: "Answer readiness" replaces the separate aeoScore (stored in the same column).
+    aeoScore: answerReadiness,
+    answerReadiness,
+    answerIssues,
+    factsConfirmed: factsTotal ? Math.round((factsPresent / factsTotal) * 100) : 0,
   };
   };
   return { add: add_, result };
