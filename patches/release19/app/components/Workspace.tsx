@@ -19,7 +19,6 @@ import {FactImport} from './FactImport';
 import {SpecReview} from './SpecReview';
 import {IndexEvidence} from './IndexEvidence';
 import {SnoozedList,NoBarcodeBulk} from './FindingDecisions';
-import {SupplierCopy} from './SupplierCopy';
 import {AiAnswers} from './AiAnswers';
 import {changeStatus,reviewable} from '../core/workflow-ui';
 import {Connections} from "./Connections";
@@ -419,7 +418,7 @@ export default function Workspace() {
           {generationBusy && refreshError && <p>Progress updates are temporarily unavailable. Reconnecting automatically; your request is still recorded.</p>}
         </div>
         <div className="table-wrap">
-          <table>
+          <table className="catalogue-table">
             <thead>
               <tr>
                 <th>
@@ -581,14 +580,14 @@ export default function Workspace() {
             </div>
           )}
           {refreshError && <p role="status" className="notice warning">Live progress is temporarily unavailable. Reconnecting automatically; your queued work continues.</p>}
-          {fetcher.data && (
-            <div
-              role="status"
-              className={"notice " + (fetcher.data.ok ? "success" : "error")}
-            >
-              {d.jobs.find(j=>j.id===fetcher.data?.jobId) ? jobMessage(d.jobs.find(j=>j.id===fetcher.data?.jobId)!,d.changes) : fetcher.data.message}
-            </div>
-          )}
+          {fetcher.data && (()=>{
+            // Release 19: the banner follows the job. A failed job gets error styling; running work is neutral.
+            const job=d.jobs.find(j=>j.id===fetcher.data?.jobId);const label=job?jobLabel(job):null;
+            const failed=!fetcher.data.ok||label==='failed'||label==='needs attention';
+            const tone=failed?'error':job&&['queued','running'].includes(job.status)?'':'success';
+            return <div role={failed?'alert':'status'} className={"notice "+tone}>
+              {job ? jobMessage(job,d.changes) : fetcher.data.message}
+            </div>;})()}
           {running && !workerHealthy && <p role="status" className="notice warning">Background processing is not responding. Accepted updates can still start here; queued generation needs the worker to recover. Avoid submitting the same work repeatedly.</p>}
           {busy && <p role="status" aria-live="polite">Submitting your request… Please wait; you do not need to click again.</p>}
           {section!=="dashboard" && sectionGuide[section] && <details className="card" style={{padding:'16px 20px',marginBottom:16}}><summary style={{cursor:'pointer',fontWeight:600}}>What is this section and how do I use it?</summary><p>{sectionGuide[section].shows}</p><ol>{sectionGuide[section].steps.map(step=><li key={step} style={{marginBottom:8}}>{step}</li>)}</ol></details>}
@@ -777,7 +776,6 @@ export default function Workspace() {
           {section === "products" && <section className="card"><h2>Fill the remaining gaps</h2><p>Review suggestions in Product details first. Use a supplier spreadsheet for specifications that could not be read from existing descriptions. Imported facts remain unconfirmed.</p><FactImport/></section>}
           {section === "products" && <SpecReview resources={d.resources} jobs={d.jobs}/>}
           {section === "products" && <NoBarcodeBulk issues={issues}/>}
-          {section === "products" && <SupplierCopy report={d.supplierCopy}/>}
           {section === "content" && (
             <>
               <div className="notice">

@@ -7,7 +7,9 @@ export type Feature =
   | "filename"
   | "handle"
   | "faq"
-  | "links";
+  | "links"
+  /** Release 19: product vendor (brand), agent-proposed and merchant-approved. */
+  | "vendor";
 export const features: Feature[] = [
   "title",
   "description",

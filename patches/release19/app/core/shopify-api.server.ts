@@ -173,7 +173,7 @@ export async function fetchResource(client: GraphQL, id: string, kind: string) {
   if (kind === "product") await hydrateProduct(client, d.node);
   return normalise(d.node, kind);
 }
-const SAFE_FIELDS = new Set(["title", "descriptionHtml", "seo", "handle"]);
+const SAFE_FIELDS = new Set(["title", "descriptionHtml", "seo", "handle", "vendor"]);
 export function safeInput(input: Record<string, unknown>) {
   for (const key of Object.keys(input))
     if (!SAFE_FIELDS.has(key))

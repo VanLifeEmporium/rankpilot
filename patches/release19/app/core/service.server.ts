@@ -161,6 +161,8 @@ export function fieldValue(p: Payload, feature: string) {
       return p.seo;
     case "handle":
       return p.handle;
+    case "vendor":
+      return p.vendor || "";
     case "description":
     case "links":
       return p.descriptionHtml;
@@ -955,9 +957,12 @@ export async function tick(options:{lane?:'apply'|'background'|'generation';jobI
     const result = await executeJob(next, true);
     const payload=JSON.parse((await prisma.job.findUniqueOrThrow({where:{id:next.id}})).payload);
     const unfinished=(next.kind === "optimise" && Array.isArray(result) && result.length < payload.ids.length) || (next.kind==='spec-fill' && !!result && typeof result==='object' && 'done' in result && !result.done);
+    // Release 19: when every item failed, the job is failed (it used to show as completed).
+    const items=Array.isArray(result)?result as {error?:string}[]:[];
+    const allFailed=!unfinished&&items.length>0&&items.every(r=>r&&typeof r==='object'&&typeof r.error==='string');
     await prisma.job.updateMany({
       where: { id: next.id, status:"running" },
-      data: { status: unfinished ? "queued" : "completed", attempts:0, lockedAt: null, error: null, payload: JSON.stringify({...payload, result}) },
+      data: { status: unfinished ? "queued" : allFailed ? "failed" : "completed", attempts:0, lockedAt: null, error: allFailed ? `All ${items.length} ${items.length===1?'item':'items'} failed: ${items[0].error}` : null, payload: JSON.stringify({...payload, result}) },
     });
   } catch (e) {
     const error = e instanceof Error ? e.message : "Job failed";

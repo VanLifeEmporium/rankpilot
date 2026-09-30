@@ -1,7 +1,8 @@
 import { specFacts } from "./spec-extract";
 import { confirmedNoBarcode } from "./finding-state";
 import { blockingMarkup } from "./html-cleanup";
-import { faqQuestionTexts, normaliseQuestion, barcodeProblems, vendorProblems, vendorKey, answeredQuestions, ANSWER_QUESTIONS, type VendorContext } from "./catalogue-checks";
+import { ruleErrors, ruleSummary } from "./brand-rules";
+import { articleFacts, nextSeason, duplicateAlts, faqQuestionTexts, normaliseQuestion, barcodeProblems, vendorProblems, vendorKey, answeredQuestions, ANSWER_QUESTIONS, type VendorContext } from "./catalogue-checks";
 import {supplierSignals} from './content-policy';
 import { load } from "cheerio";
 import {
@@ -226,6 +227,17 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
     const supplierPhrases=supplierSignals(r.kind,p);
     // Release 18: supplier markup that blocks edits (H1, buttons, forms, unsafe links).
     {const blocking=blockingMarkup(p.descriptionHtml||'');if(blocking.length)add('supplier-markup','notice',`The description contains ${blocking.join(', ')}. RankPilot will not edit around this markup. Use "Clean supplier formatting" to remove it and keep the text.`);}
+    // Release 19 (R19-22, R19-18): house style from the shared brand rules. Units are their own finding.
+    {const hits=ruleErrors(`${p.title}\n${p.seo?.title||''}\n${p.seo?.description||''}\n${p.descriptionHtml||''}`);
+     const style=hits.filter(h=>h.rule!=='Imperial units'),units=hits.filter(h=>h.rule==='Imperial units');
+     if(style.length&&['product','collection'].includes(r.kind))add('supplier-formatting','warning',`Breaks the house style: ${ruleSummary(style)}. Rewrite the wording in Shopify or with a reviewed description change.`,'description');
+     if(units.length)add('imperial-units','warning',`Imperial units: ${units.map(u=>u.match).slice(0,5).join(', ')}. Give metric measurements (cm, kg, litres).`,'description');}
+    // R19-18: long page addresses.
+    {const path=r.kind==='article'?`/blogs/${p.blogHandle||'x'}/${p.handle}`:`/${r.kind}s/${p.handle}`;if(path.length>60)add('long-url','notice',`The address ${path} is ${path.length} characters. Shorter addresses read better in search results; changing it adds a redirect from the old address.`,'handle');}
+    // R19-18: the same alt text on several images of one product.
+    if(r.kind==='product'){const dup=duplicateAlts(p.images);if(dup.length)add('duplicate-alt','notice',`${dup.map(d=>`“${d.alt}” is used on ${d.n} images`).join('; ')}. Describe what each image shows.`,'alt');}
+    // R19-15: facts in guides that go out of date.
+    if(r.kind==='article'){const facts=articleFacts(text(p.descriptionHtml));if(facts.length){const next=nextSeason();add('article-dated-facts','notice',`Check before ${next.season} (${next.date}): ${facts.length} checkable ${facts.length===1?'fact':'facts'} such as ${facts.slice(0,4).map(f=>`${f.label} “${f.text}”`).join('; ')}. Opening dates, prices and postcodes change; confirm them with the site.`);(issues[issues.length-1] as Issue).count=facts.length;}}
     if(supplierPhrases.length>=2) add('supplier-language','notice',`Low-confidence wording check: ${supplierPhrases.join(', ')}. These phrases do not prove copied content. Keep original writing unless a rewrite improves it.`, 'description');
     if (p.images.some((i) => !i.alt.trim()))
       add(

@@ -6,7 +6,7 @@ import type {Issue} from './types';
  */
 type Node={['@type']?:string|string[];image?:unknown;brand?:unknown;offers?:unknown;name?:string};
 const types=(n:Node)=>[n['@type']].flat().filter(Boolean) as string[];
-const has=(v:unknown)=>Array.isArray(v)?v.some(has):typeof v==='string'?v.trim().length>0:!!v&&typeof v==='object'&&Object.values(v as object).some(has);
+const has=(v:unknown):boolean=>Array.isArray(v)?v.some(has):typeof v==='number'?true:typeof v==='string'?v.trim().length>0:!!v&&typeof v==='object'&&Object.values(v as object).some(has);
 export function pageNotFound(html:string){
  const $=load(html);
  const h1=$('h1').first().text().replace(/\s+/g,' ').trim();
@@ -30,3 +30,12 @@ export function renderedChecks(html:string,nodes:Node[],target:{id:string;title:
  return issues;
 }
 export const RENDERED_CODES=new Set(['page-not-found','product-schema-missing','product-schema-multiple','rendered-no-images','product-brand-missing']);
+/** Release 19 (R19-17): Google merchant-listing fields missing from a product's offers. */
+export function merchantListingGaps(nodes:Node[]){
+ const offers=nodes.filter(n=>types(n).some(t=>t==='Product'||t==='ProductGroup')).flatMap(n=>[n.offers,(n as {hasVariant?:unknown}).hasVariant].flat()).flatMap(o=>[o,(o as {offers?:unknown})?.offers].flat()).filter(o=>o&&typeof o==='object') as Record<string,unknown>[];
+ if(!offers.length)return [];
+ const gaps:string[]=[];
+ if(!offers.some(o=>has(o.shippingDetails)))gaps.push('shippingDetails');
+ if(!offers.some(o=>has(o.hasMerchantReturnPolicy))&&!nodes.some(n=>has((n as {hasMerchantReturnPolicy?:unknown}).hasMerchantReturnPolicy)))gaps.push('hasMerchantReturnPolicy');
+ return gaps;
+}

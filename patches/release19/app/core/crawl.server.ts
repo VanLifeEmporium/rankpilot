@@ -1,5 +1,5 @@
 import {inspectPage,mapConcurrent} from './technical-audit';
-import {renderedChecks} from './rendered-page';
+import {renderedChecks,merchantListingGaps} from './rendered-page';
 import {themeSignals,themeFindings,type PageSignals} from './theme-leftovers';
 import { load } from "cheerio";
 import robotsParser from "robots-parser";
@@ -228,6 +228,7 @@ export async function crawlStore(
     discoveries.llms = { present: false, status: "unavailable" };
   }
   const seenLinks = new Map<string,Promise<number>>();
+  const redirectsTo = new Map<string,string>();
   const pageStatuses = new Map<string,number>();
   const linkSources=new Map<string,{id:string;title:string;url:string}[]>();
   discoveries.linkChecks={checked:0,skipped:0,unavailable:0};
@@ -253,6 +254,8 @@ export async function crawlStore(
   ];
   // Release 18: adaptive spacing. The first 429 slows the whole crawl down; pages still rate-limited
   // after their retries are checked again, one at a time, at the end instead of being reported.
+  // Release 19 (R19-17): merchant-listing fields, counted across products and reported once.
+  let listingChecked=0;const listingGaps=new Map<string,string[]>();
   let spacing=CRAWL_SPACING_MS;const deferred:typeof targets=[];const signals:PageSignals[]=[];
   discoveries.rateLimit={hits:0,deferred:0,recovered:0,spacingMs:spacing};
   const visit=async (target:(typeof targets)[number],final:boolean) => {
@@ -363,6 +366,7 @@ export async function crawlStore(
       }
       // Release 19: what the storefront renders (soft 404s, missing Product data, images, brand).
       issues.push(...renderedChecks(html,schema.nodes,target));
+      if(target.kind==='product'){listingChecked++;for(const gap of merchantListingGaps(schema.nodes))listingGaps.set(gap,[...(listingGaps.get(gap)||[]),target.url]);}
       signals.push(themeSignals(html,target.url));
       const inspected=inspectPage(html,target.url,target.id,target.title);
       issues.push(...inspected.issues);
@@ -380,10 +384,14 @@ export async function crawlStore(
   await mapConcurrent(targets,2,target=>visit(target,false));
   for(const target of deferred)await visit(target,true);
   issues.push(...themeFindings(signals));
+  if(listingGaps.size)issues.push({resourceId:'theme',title:'Live theme',code:'merchant-listing-fields',severity:'warning',detail:`Product structured data has no ${[...listingGaps.keys()].map(k=>k==='shippingDetails'?'shipping details (shippingDetails)':'return policy (hasMerchantReturnPolicy)').join(' or ')} on ${Math.max(...[...listingGaps.values()].map(v=>v.length))} of ${listingChecked} product pages (e.g. ${[...listingGaps.values()][0].slice(0,3).join(', ')}). Google uses these for merchant listings. Add them in the theme's product structured data (or set shipping and returns in Google Merchant Center); RankPilot cannot change the theme.`});
   await mapConcurrent([...linkSources],6,async ([url,sources])=>{
     try{
-      let task=seenLinks.get(url);if(pageStatuses.has(url))task=Promise.resolve(pageStatuses.get(url)!);if(!task){task=(async()=>{let r=await publicFetch(url,{method:'HEAD'});if([403,405,404,410].includes(r.status)){r=await publicFetch(url);await r.body?.cancel();}return r.status;})();seenLinks.set(url,task);}
+      let task=seenLinks.get(url);if(pageStatuses.has(url))task=Promise.resolve(pageStatuses.get(url)!);if(!task){task=(async()=>{const trace:string[]=[];let r=await publicFetch(url,{method:'HEAD'},4,trace);if([403,405,404,410].includes(r.status)){trace.length=0;r=await publicFetch(url,{},4,trace);await r.body?.cancel();}if(trace.length)redirectsTo.set(url,trace[trace.length-1]);return r.status;})();seenLinks.set(url,task);}
       const status=await task;discoveries.linkChecks!.checked++;
+      // Release 19 (R19-18): internal links that go through a redirect.
+      const final=redirectsTo.get(url);
+      if(final&&status<400&&new URL(url).origin===new URL(domain).origin)for(const source of sources)if(source.id!=='store')issues.push({resourceId:source.id,title:source.title,code:'redirected-link',severity:'notice',feature:'links',link:{url,sourceUrl:source.url,status,checkedAt:new Date().toISOString()},detail:`Link from ${source.url} to ${url} redirects to ${final}. Link straight to the final address.`});
       if(status===404||status===410)for(const source of sources)issues.push({resourceId:source.id,title:source.title,code:'broken-link',severity:'warning',link:{url,sourceUrl:source.url,status,checkedAt:new Date().toISOString()},detail:`Link from ${source.url} to ${url} returns ${status}.`});
       else if(status>=400)discoveries.linkChecks!.unavailable++;
     }catch{discoveries.linkChecks!.unavailable++;}

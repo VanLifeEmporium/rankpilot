@@ -36,25 +36,37 @@ export async function loader({ request }: LoaderFunctionArgs) {
 <h2>Open findings</h2>
 ${groups.map((g) => `<h3>${esc(g.name)} — ${g.pages} pages <small>(key: ${esc(g.key)})</small></h3><ul>${g.items.slice(0, 200).map((i) => `<li>${esc(i.title)} · <code>${esc(i.resourceId)}</code> · ${esc(i.kind)} · ${esc(i.code)} · ${esc(i.detail)}</li>`).join("")}</ul>`).join("")}
 <h2>API</h2>
-<pre>GET  /api/agent/overview
-GET  /api/agent/findings?group=google-listings
-GET  /api/agent/pages?ids=a,b&amp;full=1   (or ?kind=product&amp;limit=50&amp;offset=0; full=1 adds html)
-GET  /api/agent/changes?status=pending&amp;actor=claude-agent&amp;limit=100
+<p>Writes are dry runs by default ("dryRun":false to save) and arrive as pending proposals for the merchant unless you send "apply":true. Brand rules and claim checks apply: no "!", sales phrases, capitals for emphasis, 【】, imperial units, invented ratings, certifications, waterproof ratings, barcodes, prices or marketplace links unless they are confirmed facts. Batches return within about 10 seconds; poll GET changes?ids= for anything still applying.</p>
+<pre>GET  /api/agent/overview                      store, audit (catalogue checks, answer readiness), Store Score, change counts
+GET  /api/agent/findings?group=KEY            open findings by group (snoozed and accepted ones are left out)
+GET  /api/agent/pages?kind=product&amp;limit=50&amp;offset=0   {total, offset, limit, hasMore, items}
+GET  /api/agent/pages?ids=a,b&amp;full=1          adds html, variants (sku, barcode, price), productFields, confirmedFacts, faqs
+GET  /api/agent/changes?status=pending|verified&amp;actor=claude-agent&amp;ids=a,b&amp;limit=100
 GET  /api/agent/jobs · /api/agent/settings
 GET  /api/agent/lookup?paths=/pages/faq,https://shop/products/x
-GET  /api/agent/opportunities?limit=25   pages at Google positions 8–20, by impressions
-GET  /api/agent/readiness?gids=gid://shopify/Product/1&amp;refresh=1   (or ?ids=a,b)   go-live check, max 50
-POST /api/agent/seo            {"items":[{"resourceId","title","description"}], "dryRun":true, "apply":true}   max 25
-POST /api/agent/description    {"items":[{"resourceId","html"}], "dryRun":true, "apply":true}   max 10
-POST /api/agent/headings       {"ids":[...], "dryRun":true}   max 25
-POST /api/agent/redirects      {"items":[{"path","target"}], "dryRun":true}   max 20
-POST /api/agent/approve        {"ids":[...]}   max 25
-POST /api/agent/reject         {"stale":true} or {"ids":[...]}   pending previews only
-POST /api/agent/dismiss        {"stale":true} or {"ids":[...], "reason"}   failed, conflicted or pending rows
+GET  /api/agent/opportunities?limit=25        pages at Google positions 8–20
+GET  /api/agent/readiness?gids=gid://shopify/Product/1&amp;refresh=1   go-live check (max 50), includes brand rules
+GET  /api/agent/spec-coverage                 products with no readable specification
+GET  /api/agent/supplier-copy
+POST /api/agent/seo            {"items":[{"resourceId","title","description"}], "dryRun", "apply"}   max 25
+POST /api/agent/description    {"items":[{"resourceId","html"}], "dryRun", "apply"}   max 10; articles and pages keep their own layout markup
+POST /api/agent/faq            {"items":[{"resourceId","faqs":[{"question","answer"}]}], "dryRun", "apply"}   max 5
+POST /api/agent/product        {"items":[{"resourceId","title"?,"vendor"?}], "dryRun", "apply"}   max 10
+POST /api/agent/headings       {"ids":[...], "dryRun", "apply"}   max 25
+POST /api/agent/clean-formatting {"ids":[...], "dryRun", "apply"}   max 20
+POST /api/agent/redirects      {"items":[{"path","target"}], "dryRun", "apply"}   max 20
+POST /api/agent/approve        {"ids":[...]}   approve pending proposals (max 25)
+POST /api/agent/reject         {"stale":true} or {"ids":[...]}
+POST /api/agent/undo           {"ids":[changeId,...]}   applied changes only; queued
+POST /api/agent/keep-shopify   {"changeIds":[...]}   accept the Shopify value for a changed-outside finding
+POST /api/agent/no-barcode     {"ids":[...], "undo":false}   own-label products with no manufacturer barcode
+POST /api/agent/snooze         {"items":[{"resourceId","code","until":"2027-06-01","reason"}]} or {"items":[...], "unsnooze":true}
+POST /api/agent/confirm-facts  {"items":[{"resourceId","keys":["weight",...]}]}   after checking the values
+POST /api/agent/dismiss        {"stale":true} or {"ids":[...], "reason"}
 POST /api/agent/recheck-pages  {"limit":20}   queued; read the result from GET jobs
-POST /api/agent/job            {"kind":"audit"|"indexation"|"refresh-audit"|"generate-alt"|"recheck-pages","ids":[...]}
+POST /api/agent/job            {"kind":"audit"|"indexation"|"refresh-audit"|"generate-alt"|"recheck-pages"|"crux","ids":[...]}
 POST /api/agent/verify         {"id":"changeId"}
-Writes default to dryRun:true; send "dryRun":false to save.
+POST /api/agent/supplier-originals {"items":[{"handle","text","source"}]}
 All POSTs need header X-RankPilot-Agent: 1 and JSON body.</pre>`;
   return page(body);
 }

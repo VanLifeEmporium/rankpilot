@@ -82,3 +82,31 @@ export function answeredQuestions(p:Payload,facts:Facts,opts:{deliveryPolicy?:bo
  }
  return result;
 }
+
+// ---- R19-15: checkable facts in articles ----
+const MONTHS='January|February|March|April|May|June|July|August|September|October|November|December';
+const FACT_PATTERNS:{label:string;re:RegExp}[]=[
+ {label:'opening dates',re:new RegExp(`\\b(?:open(?:s|ing)?|closed?|closes|season)\\b[^.!?]{0,80}\\b(?:${MONTHS}|Easter|half[- ]term|bank holidays?)\\b`,'gi')},
+ {label:'open all year',re:/\b(?:open all year(?: round)?|open year[- ]round|all[- ]year[- ]round|closed (?:in|over) (?:the )?winter)\b/gi},
+ {label:'postcode',re:/\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/g},
+ {label:'price',re:/£\s?\d+(?:\.\d{2})?(?:\s?(?:per|a|\/)\s?(?:night|pitch|person|adult|child|day|week))?/gi},
+];
+/** Next re-check: the start of the coming season (1 March, 1 June, 1 September, 1 December). */
+export function nextSeason(now=new Date()){
+ const starts:[number,string][]=[[2,'spring'],[5,'summer'],[8,'autumn'],[11,'winter']];
+ const y=now.getUTCFullYear(),m=now.getUTCMonth();
+ const next=starts.find(([month])=>month>m)||[2,'spring'];
+ const year=next[0]>m?y:y+1;
+ return {season:next[1],date:new Date(Date.UTC(year,next[0],1)).toISOString().slice(0,10)};
+}
+export function articleFacts(text:string){
+ const items:{label:string;text:string}[]=[];
+ for(const p of FACT_PATTERNS)for(const m of text.matchAll(p.re))items.push({label:p.label,text:m[0].trim().slice(0,80)});
+ const seen=new Set<string>();return items.filter(i=>{const k=i.label+'|'+i.text.toLowerCase();if(seen.has(k))return false;seen.add(k);return true;});
+}
+
+// ---- R19-18: duplicate alt text within a product ----
+export function duplicateAlts(images:{alt:string}[]){
+ const count=new Map<string,number>();for(const i of images){const a=(i.alt||'').trim().toLowerCase();if(a)count.set(a,(count.get(a)||0)+1);}
+ return [...count].filter(([,n])=>n>1).map(([alt,n])=>({alt,n}));
+}

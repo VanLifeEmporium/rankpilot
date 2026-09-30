@@ -1,5 +1,5 @@
 import type {Feature,Issue} from './types';
-import {supplierCopyReport,saveSupplierOriginals,proposeCleanFormatting} from './supplier-copy.server';
+import {saveSupplierOriginals,proposeCleanFormatting} from './supplier-copy.server';
 import {applyFindingState,snooze,unsnooze,keepShopify,noBarcodeFact} from './finding-state';
 import {indexSummary} from './index-summary';
 import {collectionCopy} from './suggestions.server';
@@ -146,8 +146,6 @@ export async function loadUI(request: Request) {
     audits:audits.map((a,index)=>index>0?{...a,issues:'[]',coverage:'{}'}:({...a,issues:JSON.stringify(applyFindingState(jsonList(a.issues) as Issue[],settings(store.settings)).active.filter(i=>!i||typeof i!=='object'||!('code' in i)||i.code!=='reported-404'||('resourceId' in i&&(settings(store.settings).reportedPaths||[]).some(p=>i.resourceId==='reported:'+p)))),coverage:JSON.stringify(jsonObject(a.coverage))})),
     credentialNames: Object.keys(keys).filter((k) => Boolean(keys[k])),
     // Release 18: findings hidden until a date, listed so they can be brought back.
-    // Release 18: products still on supplier copy (only where originals were supplied).
-    supplierCopy: section==='products'?await supplierCopyReport(store.id):null,
     snoozed: audits[0]?applyFindingState(jsonList(audits[0].issues) as Issue[],settings(store.settings)).snoozed:[],
   };
 }

@@ -17,14 +17,14 @@ import type { Issue, Payload, Facts } from "./types";
 import { settings } from "./types";
 import { actionGroups } from "./dashboard";
 import { findingName } from "./merchant-copy";
-import { approve, enqueue, log, tick, clientFor, verifyChange, assertSafeCopy, enqueueGeneration, proposeRedirect, sync } from "./service.server";
+import { approve, enqueue, log, tick, clientFor, verifyChange, assertSafeCopy, enqueueGeneration, proposeRedirect, sync, refreshCatalogueAudit } from "./service.server";
 import { fetchResource } from "./shopify-api.server";
 import { publicFetch, limitedText } from "./crawl.server";
 import { dismissChanges, settleStaleChanges } from "./history-hygiene.server";
 import { applyFindingState } from "./finding-state";
 import { brandGate, brandRuleHits, newRuleErrors, ruleErrors, ruleSummary, unverifiedClaims, wordCut } from "./brand-rules";
 
-export const RELEASE = "18";
+export const RELEASE = "19";
 export const AGENT_ACTOR = "claude-agent";
 export const AGENT_REASON =
   "agent-reviewed-v1: Written by the RankPilot agent from this page's own content at the merchant's request, checked against the page text and applied through the bulk tool. Undo is available in Results & history.";
@@ -32,6 +32,8 @@ const COOKIE = "rankpilot_agent";
 const LINK_TTL = "15m";
 const SESSION_SECONDS = 2 * 60 * 60;
 const BUSY = ["approved", "applying", "verifying", "rolling_back"];
+/** Release 19: batches return within about 10 s; changes still saving show as applying — poll GET changes?ids=. */
+const AGENT_WAIT_MS = Number(process.env.AGENT_WAIT_MS) || 7000;
 const BODY_FEATURES = ["description", "links"];
 
 export function agentEnabled() {
@@ -192,13 +194,11 @@ export async function findings(storeId: string, group?: string) {
 export async function pages(storeId: string, opts: { ids?: string[]; kind?: string; limit?: number; offset?: number; full?: boolean }) {
   const store = await prisma.store.findUniqueOrThrow({ where: { id: storeId } });
   const shopName = shopNameOf(store);
-  const rows = await prisma.resource.findMany({
-    where: { storeId, ...(opts.ids?.length ? { id: { in: opts.ids } } : {}), ...(opts.kind ? { kind: opts.kind } : {}) },
-    orderBy: [{ kind: "asc" }, { title: "asc" }],
-    skip: opts.offset || 0,
-    take: Math.min(opts.limit || 50, 200),
-  });
-  return rows.map((r) => {
+  // Release 19: paged with total and offset (the old response stopped silently at 200).
+  const where = { storeId, ...(opts.ids?.length ? { id: { in: opts.ids } } : {}), ...(opts.kind ? { kind: opts.kind } : {}) };
+  const offset = Math.max(0, opts.offset || 0), limit = Math.max(1, Math.min(opts.limit || 50, 200));
+  const [total, rows] = await Promise.all([prisma.resource.count({ where }), prisma.resource.findMany({ where, orderBy: [{ kind: "asc" }, { title: "asc" }, { id: "asc" }], skip: offset, take: limit })]);
+  const items = rows.map((r) => {
     const p: Payload = JSON.parse(r.payload);
     const body = text(p.descriptionHtml);
     const shown = servedTitle(p.seo?.title || "", shopName);
@@ -217,17 +217,26 @@ export async function pages(storeId: string, opts: { ids?: string[]; kind?: stri
       price: p.variants?.[0]?.price,
       images: opts.full ? p.images?.map((i) => ({ id: i.id, alt: i.alt, url: i.url })) : p.images?.length,
       ...(opts.full ? { html: p.descriptionHtml } : {}),
+      // Release 19: grounding data, so an agent can write without scraping the storefront.
+      ...(opts.full ? {
+        variants: (p.variants || []).map((v) => ({ sku: v.sku, barcode: v.barcode, price: v.price, options: v.selectedOptions })),
+        productFields: p.metafields || {},
+        confirmedFacts: Object.fromEntries(Object.entries(JSON.parse(r.facts || "{}") as Facts).filter(([, f]) => f?.confirmed).map(([k, f]) => [k, { value: f.value, source: f.source }])),
+        faqs: p.faqs || [],
+      } : {}),
       text: opts.full ? body.slice(0, 6000) : body.slice(0, 700),
       textLength: body.length,
     };
   });
+  return { total, offset, limit, hasMore: offset + items.length < total, items };
 }
 
 export async function changes(storeId: string, opts: { status?: string; ids?: string[]; limit?: number; actor?: string }) {
   const rows = await prisma.change.findMany({
     where: {
       storeId,
-      ...(opts.status ? { status: { in: opts.status.split(",") } } : {}),
+      // Release 19: "verified" is an alias for applied (saved and read back from Shopify).
+      ...(opts.status ? { status: { in: opts.status.split(",").map((x) => (x === "verified" ? "applied" : x)) } } : {}),
       ...(opts.ids?.length ? { id: { in: opts.ids } } : {}),
       ...(opts.actor ? { approvedBy: opts.actor } : {}),
     },
@@ -241,6 +250,7 @@ export async function changes(storeId: string, opts: { status?: string; ids?: st
     page: titles.get(c.resourceId),
     feature: c.feature,
     status: c.status,
+    verified: c.status === "applied",
     error: c.error,
     approvedBy: c.approvedBy,
     before: JSON.parse(c.before),
@@ -349,7 +359,7 @@ export async function bulkSeo(storeId: string, input: unknown) {
       results.push({ resourceId, ok: false, status: e instanceof BusyError ? "busy" : "error", message: (e as Error).message });
     }
   }
-  await settleResults(storeId, results, body.apply ? created : [], 45000);
+  await settleResults(storeId, results, body.apply ? created : [], AGENT_WAIT_MS);
   await log(storeId, "Agent bulk SEO update", { dryRun: body.dryRun, count: results.length, applied: results.filter((r) => r.status === "applied").length });
   return { dryRun: body.dryRun, results };
 }
@@ -433,7 +443,7 @@ export async function recheckPages(storeId: string, input: unknown) {
 }
 
 export async function queueJob(storeId: string, input: unknown) {
-  const { kind, ids, limit } = z.object({ kind: z.enum(["audit", "indexation", "refresh-audit", "generate-alt", "recheck-pages"]), ids: z.array(z.string()).max(50).optional(), limit: z.number().int().min(1).max(40).optional() }).parse(input);
+  const { kind, ids, limit } = z.object({ kind: z.enum(["audit", "indexation", "refresh-audit", "generate-alt", "recheck-pages", "crux"]), ids: z.array(z.string()).max(50).optional(), limit: z.number().int().min(1).max(40).optional() }).parse(input);
   if (kind === "generate-alt") {
     if (!ids?.length) throw new Error("Pass product ids for alt text generation");
     return { job: await enqueueGeneration(storeId, ids, "alt") };
@@ -543,7 +553,7 @@ export async function bulkHeadings(storeId: string, input: unknown) {
       results.push({ resourceId: id, ok: false, status: e instanceof BusyError ? "busy" : "error", message: (e as Error).message });
     }
   }
-  await settleResults(storeId, results, created, 40000);
+  await settleResults(storeId, results, created, AGENT_WAIT_MS);
   await log(storeId, "Agent heading repair", { dryRun: body.dryRun, count: results.length });
   return { dryRun: body.dryRun, results };
 }
@@ -551,21 +561,33 @@ export async function bulkHeadings(storeId: string, input: unknown) {
 const BLOCKED_HTML = /<\s*(script|style|iframe|object|embed|form|input|button|link|meta)\b|\son[a-z]+\s*=|javascript:/i;
 const ALLOWED_TAGS = new Set(["h2", "h3", "h4", "h5", "h6", "p", "br", "ul", "ol", "li", "strong", "b", "em", "i", "a", "table", "thead", "tbody", "tr", "th", "td", "img", "span", "div", "blockquote", "dl", "dt", "dd", "details", "summary", "h1"]);
 const ALLOWED_ATTRS: Record<string, string[]> = { a: ["href", "title", "target", "rel"], img: ["src", "alt", "width", "height", "loading"] };
-function htmlOutsideAllowed(html: string) {
+/** Release 19: tags and tag[attribute] pairs already used in a stored body (articles and pages keep their layout). */
+export function markupOf(html: string) {
+  const $ = load(html || "", null, false);
+  const tags = new Set<string>(), attrs = new Set<string>();
+  $("*").each((_, el) => {
+    const name = (el as unknown as { name: string }).name;
+    tags.add(name);
+    for (const attr of Object.keys((el as unknown as { attribs: Record<string, string> }).attribs || {})) if (!/^on/i.test(attr)) attrs.add(`${name}[${attr}]`);
+  });
+  for (const t of ["script", "style", "iframe", "object", "embed", "form", "input", "button", "link", "meta"]) tags.delete(t);
+  return { tags, attrs };
+}
+function htmlOutsideAllowed(html: string, existing: { tags: Set<string>; attrs: Set<string> } = { tags: new Set(), attrs: new Set() }) {
   const $ = load(html, null, false);
   const bad = new Set<string>();
   $("*").each((_, el) => {
     const name = (el as unknown as { name: string }).name;
-    if (!ALLOWED_TAGS.has(name)) bad.add(`<${name}>`);
+    if (!ALLOWED_TAGS.has(name) && !existing.tags.has(name)) bad.add(`<${name}>`);
     for (const attr of Object.keys((el as unknown as { attribs: Record<string, string> }).attribs || {}))
-      if (attr !== "class" && !(ALLOWED_ATTRS[name] || []).includes(attr)) bad.add(`${name}[${attr}]`);
+      if (attr !== "class" && !(ALLOWED_ATTRS[name] || []).includes(attr) && !existing.attrs.has(`${name}[${attr}]`)) bad.add(`${name}[${attr}]`);
     const url = $(el).attr("href") || $(el).attr("src");
     if (url && !/^(https:|mailto:|tel:|\/(?!\/)|#)/i.test(url)) bad.add(`${name} link “${url.slice(0, 40)}”`);
   });
   return [...bad];
 }
 export const descriptionItem = z.object({ resourceId: z.string().min(1), html: z.string().trim().min(1).max(60000) });
-export function descriptionProblems(html: string, context: { before?: string; facts?: Facts } = {}) {
+export function descriptionProblems(html: string, context: { before?: string; facts?: Facts; kind?: string } = {}) {
   const errors: string[] = [];
   const warnings: string[] = [];
   // Release 19: the shared brand rules and unverified-claim checks are errors, not warnings.
@@ -578,7 +600,8 @@ export function descriptionProblems(html: string, context: { before?: string; fa
   const spelling = brandRuleHits(html).filter((h) => h.severity === "warning");
   if (spelling.length) warnings.push(ruleSummary(spelling));
   if (BLOCKED_HTML.test(html)) errors.push("Scripts, styles, frames, forms and event handlers are not allowed.");
-  const outside = htmlOutsideAllowed(html);
+  // Release 19: guides and pages may keep markup their stored body already uses (aside, figure, hr, ids, styles).
+  const outside = htmlOutsideAllowed(html, ["article", "page"].includes(context.kind || "") ? markupOf(context.before || "") : undefined);
   if (outside.length) errors.push(`Not allowed in a description: ${outside.slice(0, 6).join(", ")}. Use headings H2–H6, paragraphs, lists, links, tables, images and emphasis.`);
   if (/<h1\b/i.test(html)) errors.push("Do not use H1 in a body; the theme already renders the page title as H1.");
   const words = text(html).split(/\s+/).filter(Boolean).length;
@@ -607,7 +630,7 @@ export async function bulkDescription(storeId: string, input: unknown) {
     try {
       const r = await prisma.resource.findFirstOrThrow({ where: { id: resourceId, storeId } });
       const live: Payload = client ? await fetchResource(client, r.remoteId, r.kind) : JSON.parse(r.payload);
-      const { errors, warnings, words } = descriptionProblems(parsed.data.html, { before: live.descriptionHtml, facts: JSON.parse(r.facts || "{}") });
+      const { errors, warnings, words } = descriptionProblems(parsed.data.html, { before: live.descriptionHtml, facts: JSON.parse(r.facts || "{}"), kind: r.kind });
       if (errors.length) { results.push({ resourceId, title: r.title, ok: false, status: "invalid", message: errors.join(" "), warnings }); continue; }
       if (text(live.descriptionHtml) === text(parsed.data.html) && live.descriptionHtml.trim() === parsed.data.html) { results.push({ resourceId, title: r.title, ok: true, status: "unchanged", message: "Already saved" }); continue; }
       if (await isBusy(storeId, r.id)) { results.push({ resourceId, title: r.title, ok: false, status: "busy", message: "Another update is applying to this page" }); continue; }
@@ -622,7 +645,7 @@ export async function bulkDescription(storeId: string, input: unknown) {
       results.push({ resourceId, ok: false, status: e instanceof BusyError ? "busy" : "error", message: (e as Error).message });
     }
   }
-  await settleResults(storeId, results, body.apply ? created : [], 45000);
+  await settleResults(storeId, results, body.apply ? created : [], AGENT_WAIT_MS);
   await log(storeId, "Agent description update", { dryRun: body.dryRun, count: results.length });
   return { dryRun: body.dryRun, results };
 }
@@ -654,13 +677,14 @@ export async function bulkRedirects(storeId: string, input: unknown) {
       results.push({ ...item, ok: false, status: "error", message: (e as Error).message });
     }
   }
-  if (created.length) await waitForApplies(storeId, created, 40000);
+  if (created.length) await waitForApplies(storeId, created, AGENT_WAIT_MS);
   const final = new Map((await prisma.change.findMany({ where: { id: { in: created } } })).map((c) => [c.id, c]));
   for (const r of results) { const c = r.changeId && final.get(r.changeId); if (c) { r.status = c.status; if (c.error) r.message = c.error; } }
   await log(storeId, "Agent redirect update", { dryRun: body.dryRun, count: results.length });
   return { dryRun: body.dryRun, results };
 }
 
+const idsOf = (body: { ids?: string[]; resourceIds?: string[] }) => body.ids || body.resourceIds || [];
 const OPTIONAL_CODES = new Set(["thin-content", "supplier-language", "missing-product-faq", "missing-gtin", "nofollow-review", "slow-response", "image-loading-review", "large-image", "live-title-long", "keyword-cannibalisation"]);
 /**
  * Release 17: go-live check for Store Operations. A product is ready when every image has
@@ -765,7 +789,9 @@ export async function supplierCopy(storeId: string) {
 }
 /** Release 18: formatting-only clean-up proposals. Dry run by default; apply approves them through the change pipeline. */
 export async function cleanFormatting(storeId: string, input: unknown) {
-  const body = z.object({ resourceIds: z.array(z.string().min(1)).min(1).max(20), dryRun: z.boolean().default(true), apply: z.boolean().default(false) }).parse(input);
+  // Release 19: ids, like every other endpoint (resourceIds still accepted).
+  const raw = z.object({ ids: z.array(z.string().min(1)).max(20).optional(), resourceIds: z.array(z.string().min(1)).max(20).optional(), dryRun: z.boolean().default(true), apply: z.boolean().default(false) }).parse(input);
+  const body = { ...raw, resourceIds: z.array(z.string()).min(1, "Send ids").parse(idsOf(raw)) };
   const { cleanSupplierHtml } = await import("./html-cleanup");
   const { proposeCleanFormatting } = await import("./supplier-copy.server");
   const results: { resourceId: string; ok: boolean; status: string; removed?: string[]; changeId?: string; message?: string }[] = [];
@@ -785,7 +811,7 @@ export async function cleanFormatting(storeId: string, input: unknown) {
       results.push({ resourceId, ok: false, status: "error", message: (e as Error).message });
     }
   }
-  if (created.length) await waitForApplies(storeId, created, 40000);
+  if (created.length) await waitForApplies(storeId, created, AGENT_WAIT_MS);
   await log(storeId, "Agent formatting clean-up", { dryRun: body.dryRun, count: results.length });
   return { dryRun: body.dryRun, results };
 }
@@ -794,4 +820,125 @@ export async function specCoverageReport(storeId: string) {
   const { specCoverage } = await import("./spec-review.server");
   const products = await prisma.resource.findMany({ where: { storeId, kind: "product" }, select: { payload: true } });
   return { ...specCoverage(products), baseline: { date: "2026-09-29", none: 241, total: 315 }, target: "under 30% with no suggestions" };
+}
+
+// ---------------------------------------------------------------------------
+// Release 19 (R19-11): the merchant UI's actions, for agents. Writes follow the same rules:
+// dry run by default, pending proposals unless apply: true, brand rules and claim checks.
+// ---------------------------------------------------------------------------
+/** Undo applied changes (queued on the apply lane; poll GET changes?ids=). */
+export async function undoChanges(storeId: string, input: unknown) {
+  const body = z.object({ ids: z.array(z.string().min(1)).min(1).max(20) }).parse(input);
+  const results: { id: string; ok: boolean; status: string; message?: string }[] = [];
+  for (const id of body.ids) {
+    const c = await prisma.change.findFirst({ where: { id, storeId } });
+    if (!c) { results.push({ id, ok: false, status: "not_found" }); continue; }
+    if (c.status !== "applied") { results.push({ id, ok: false, status: c.status, message: "Only an applied change can be undone" }); continue; }
+    await enqueue(storeId, "rollback", { changeId: c.id }, c.id);
+    results.push({ id, ok: true, status: "queued", message: "Undo queued; check GET changes?ids= for rolled_back or rollback_failed" });
+  }
+  await log(storeId, "Agent undo", { count: results.length, actor: AGENT_ACTOR });
+  return { results };
+}
+/** Keep the value now in Shopify for a changed-outside finding (no Shopify write). */
+export async function keepShopifyVersion(storeId: string, input: unknown) {
+  const body = z.object({ changeIds: z.array(z.string().min(1)).min(1).max(50) }).parse(input);
+  const { keepShopify } = await import("./finding-state");
+  const store = await prisma.store.findUniqueOrThrow({ where: { id: storeId } });
+  let cfg = settings(store.settings);
+  const rows = await prisma.change.findMany({ where: { storeId, id: { in: body.changeIds }, status: { in: ["applied", "rollback_failed"] } } });
+  for (const r of rows) cfg = keepShopify(cfg, r.id);
+  await prisma.store.update({ where: { id: storeId }, data: { settings: JSON.stringify(cfg) } });
+  await refreshCatalogueAudit(storeId);
+  await log(storeId, "Agent kept Shopify's version", { count: rows.length, actor: AGENT_ACTOR });
+  return { kept: rows.map((r) => r.id), notFound: body.changeIds.filter((id) => !rows.some((r) => r.id === id)) };
+}
+/** Confirm (or undo) "No manufacturer barcode" on own-label products. */
+export async function noBarcode(storeId: string, input: unknown) {
+  const body = z.object({ ids: z.array(z.string().min(1)).min(1).max(500), undo: z.boolean().default(false) }).parse(input);
+  const { noBarcodeFact } = await import("./finding-state");
+  const rows = await prisma.resource.findMany({ where: { storeId, kind: "product", id: { in: body.ids } }, select: { id: true, facts: true } });
+  for (const r of rows) { const facts = JSON.parse(r.facts || "{}"); if (body.undo) delete facts.barcode; else facts.barcode = noBarcodeFact(); await prisma.resource.update({ where: { id: r.id }, data: { facts: JSON.stringify(facts) } }); }
+  await refreshCatalogueAudit(storeId);
+  await log(storeId, body.undo ? "Agent removed no-barcode confirmation" : "Agent confirmed no manufacturer barcode", { count: rows.length, actor: AGENT_ACTOR });
+  return { updated: rows.map((r) => r.id), notFound: body.ids.filter((id) => !rows.some((r) => r.id === id)), undo: body.undo };
+}
+/** Snooze findings until a date with a reason, or bring them back. */
+export async function snoozeFindings(storeId: string, input: unknown) {
+  const body = z.object({ items: z.array(z.object({ resourceId: z.string().min(1), code: z.string().min(1), until: z.string().optional(), reason: z.string().optional() })).min(1).max(50), unsnooze: z.boolean().default(false) }).parse(input);
+  const { snooze, unsnooze } = await import("./finding-state");
+  const store = await prisma.store.findUniqueOrThrow({ where: { id: storeId } });
+  let cfg = settings(store.settings);
+  const results: { resourceId: string; code: string; ok: boolean; message?: string }[] = [];
+  for (const i of body.items) {
+    try { cfg = body.unsnooze ? unsnooze(cfg, i) : snooze(cfg, { resourceId: i.resourceId, code: i.code, until: i.until || "", reason: i.reason || "" }); results.push({ ...i, ok: true }); }
+    catch (e) { results.push({ resourceId: i.resourceId, code: i.code, ok: false, message: (e as Error).message }); }
+  }
+  await prisma.store.update({ where: { id: storeId }, data: { settings: JSON.stringify(cfg) } });
+  await log(storeId, body.unsnooze ? "Agent removed snoozes" : "Agent snoozed findings", { count: results.filter((r) => r.ok).length, actor: AGENT_ACTOR });
+  return { results };
+}
+/** Confirm suggested facts after checking them (all, or the listed keys). */
+export async function confirmFacts(storeId: string, input: unknown) {
+  const body = z.object({ items: z.array(z.object({ resourceId: z.string().min(1), keys: z.array(z.string()).optional() })).min(1).max(50) }).parse(input);
+  const { confirmAllSpecs } = await import("./spec-review.server");
+  const results: { resourceId: string; ok: boolean; confirmed?: number; message?: string }[] = [];
+  for (const i of body.items) {
+    try { results.push({ resourceId: i.resourceId, ok: true, confirmed: await confirmAllSpecs(storeId, i.resourceId, i.keys) }); }
+    catch (e) { results.push({ resourceId: i.resourceId, ok: false, message: (e as Error).message }); }
+  }
+  await refreshCatalogueAudit(storeId);
+  await log(storeId, "Agent confirmed facts", { count: results.length, actor: AGENT_ACTOR });
+  return { results };
+}
+const faqItem = z.object({ resourceId: z.string().min(1), faqs: z.array(z.object({ question: z.string().trim().min(5).max(300), answer: z.string().trim().min(2).max(2000) })).min(1).max(12) });
+/** Write product FAQs (the FAQ metafield). */
+export async function bulkFaq(storeId: string, input: unknown) {
+  const body = z.object({ items: z.array(faqItem).min(1).max(5), dryRun: z.boolean().default(true), apply: z.boolean().default(false) }).parse(input);
+  const results: Result[] = [];
+  const created: string[] = [];
+  for (const item of body.items) {
+    try {
+      const r = await prisma.resource.findFirstOrThrow({ where: { id: item.resourceId, storeId, kind: "product" } });
+      const p: Payload = JSON.parse(r.payload);
+      const problems = brandGate("faq", p.faqs || [], item.faqs, JSON.parse(r.facts || "{}"));
+      if (problems.length) { results.push({ resourceId: r.id, title: r.title, ok: false, status: "invalid", message: problems.join("; ") }); continue; }
+      if (body.dryRun) { results.push({ resourceId: r.id, title: r.title, ok: true, status: "valid", message: `${(p.faqs || []).length} → ${item.faqs.length} questions` }); continue; }
+      const row = await stageChange(storeId, r.id, "faq", p.faqs || [], item.faqs, [AGENT_REASON]);
+      if (body.apply) { await approve(storeId, row.id, AGENT_ACTOR); created.push(row.id); }
+      results.push({ resourceId: r.id, title: r.title, ok: true, status: body.apply ? "approved" : "pending", changeId: row.id });
+    } catch (e) {
+      results.push({ resourceId: item.resourceId, ok: false, status: e instanceof BusyError ? "busy" : "error", message: (e as Error).message });
+    }
+  }
+  if (created.length) await settleResults(storeId, results, created, AGENT_WAIT_MS);
+  await log(storeId, "Agent FAQ update", { dryRun: body.dryRun, count: results.length });
+  return { dryRun: body.dryRun, results };
+}
+const productItem = z.object({ resourceId: z.string().min(1), title: z.string().trim().min(3).max(255).optional(), vendor: z.string().trim().min(2).max(100).optional() }).refine((v) => v.title || v.vendor, "Send title and/or vendor");
+/** Change a product's title and/or vendor (brand). */
+export async function bulkProduct(storeId: string, input: unknown) {
+  const body = z.object({ items: z.array(productItem).min(1).max(10), dryRun: z.boolean().default(true), apply: z.boolean().default(false) }).parse(input);
+  const results: (Result & { field?: string })[] = [];
+  const created: string[] = [];
+  for (const item of body.items) {
+    try {
+      const r = await prisma.resource.findFirstOrThrow({ where: { id: item.resourceId, storeId, kind: "product" } });
+      const p: Payload = JSON.parse(r.payload);
+      for (const [field, value, before] of [["title", item.title, p.title], ["vendor", item.vendor, p.vendor || ""]] as const) {
+        if (!value || value === before) continue;
+        const problems = field === "title" ? brandGate("title", before, value) : /^(n\/?a|none|unbranded|un-branded)$/i.test(value) ? ["Use the real brand, not a placeholder"] : [];
+        if (problems.length) { results.push({ resourceId: r.id, title: r.title, field, ok: false, status: "invalid", message: problems.join("; ") }); continue; }
+        if (body.dryRun) { results.push({ resourceId: r.id, title: r.title, field, ok: true, status: "valid", message: `${before || "(blank)"} → ${value}` }); continue; }
+        const row = await stageChange(storeId, r.id, field, before, value, [AGENT_REASON]);
+        if (body.apply) { await approve(storeId, row.id, AGENT_ACTOR); created.push(row.id); }
+        results.push({ resourceId: r.id, title: r.title, field, ok: true, status: body.apply ? "approved" : "pending", changeId: row.id });
+      }
+    } catch (e) {
+      results.push({ resourceId: item.resourceId, ok: false, status: e instanceof BusyError ? "busy" : "error", message: (e as Error).message });
+    }
+  }
+  if (created.length) await settleResults(storeId, results, created, AGENT_WAIT_MS);
+  await log(storeId, "Agent product update", { dryRun: body.dryRun, count: results.length });
+  return { dryRun: body.dryRun, results };
 }
