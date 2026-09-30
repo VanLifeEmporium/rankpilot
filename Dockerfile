@@ -239,11 +239,14 @@ COPY patches/release142/ /app/
 COPY patches/release15/ /app/
 COPY patches/release17/ /app/
 COPY patches/release18/ /app/
-RUN npm ci && npx prisma generate && npm run build
+COPY patches/release19/ /app/
+# Release 19: production build, worker compiled at build time, dev packages removed from the runtime.
+RUN npm ci && npx prisma generate && NODE_ENV=production npm run build && node scripts/build-worker.mjs && npm prune --omit=dev
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/data/rankpilot.sqlite
 RUN mkdir -p /data && chown -R node:node /data /app
 USER node
 EXPOSE 3000
-CMD ["sh", "-c", "npm run setup && npm run start:all"]
+# Release 19: migrate once, then plain node processes with heap limits (WEB_HEAP_MB, WORKER_HEAP_MB).
+CMD ["bash", "scripts/start.sh"]
 
