@@ -1,3 +1,4 @@
+import {plural} from './plural';
 import type {Feature,Issue} from './types';
 import {saveSupplierOriginals,proposeCleanFormatting} from './supplier-copy.server';
 import {applyFindingState,snooze,unsnooze,keepShopify,noBarcodeFact} from './finding-state';
@@ -231,7 +232,7 @@ export async function actionUI(request: Request) {
         if(!ids.length)return data({ok:false,message:'No product has 3 or more confirmed facts and no FAQs yet. Confirm facts first (Fill specs for all products).'});
         const job=await enqueueGeneration(store.id,ids,'faq');
         await log(store.id,'Bulk FAQ proposals queued',{count:ids.length,actor});
-        return data({ok:true,jobId:job.id,message:`Preparing FAQ proposals for ${ids.length} products from confirmed facts only. They appear in the review queue; nothing is published until you accept.`});
+        return data({ok:true,jobId:job.id,message:`Preparing FAQ proposals for ${plural(ids.length,'product')} from confirmed facts only. They appear in the review queue; nothing is published until you accept.`});
       }
       case "snoozeFinding": {
         const cfg=snooze(settings(store.settings),{resourceId:value('resourceId'),code:value('code'),until:value('until'),reason:value('reason'),title:value('title')||undefined});
@@ -259,7 +260,7 @@ export async function actionUI(request: Request) {
         for(const r of rows){const facts=JSON.parse(r.facts||'{}');if(undo)delete facts.barcode;else facts.barcode=noBarcodeFact();await prisma.resource.update({where:{id:r.id},data:{facts:JSON.stringify(facts)}});}
         await refreshCatalogueAudit(store.id);
         await log(store.id,undo?'No-barcode confirmation removed':'Confirmed no manufacturer barcode',{count:rows.length,actor});
-        return data({ok:true,message:undo?`Removed the confirmation for ${rows.length} products.`:`${rows.length} products confirmed as having no manufacturer barcode. They are no longer flagged for GTIN.`});
+        return data({ok:true,message:undo?`Removed the confirmation for ${plural(rows.length,'product')}.`:`${plural(rows.length,'product')} confirmed as having no manufacturer barcode. They are no longer flagged for GTIN.`});
       }
       case "fieldSpeed": {
         const active=await prisma.job.findFirst({where:{storeId:store.id,kind:'crux',status:{in:['queued','running']}}});
@@ -372,7 +373,7 @@ export async function actionUI(request: Request) {
           }catch{results.push({id:item.id,ok:false});}
         }
         const accepted=results.filter(r=>r.ok).length;
-        return data({ok:accepted===items.length,message:`${accepted} changes accepted and queued to save. ${items.length-accepted ? `${items.length-accepted} previews changed or need attention; these were not accepted.` : 'Progress appears automatically below.'}`});
+        return data({ok:accepted===items.length,message:`${plural(accepted,'change')} accepted and queued to save. ${items.length-accepted ? `${items.length-accepted} previews changed or need attention; these were not accepted.` : 'Progress appears automatically below.'}`});
       }
       case "reviseProposal": {
         const fields=z.object({title:z.string().trim().min(1).max(255),description:z.string().trim().min(1).max(500),version:z.string(),confirmed:z.literal(true)}).parse(JSON.parse(value('reason')));
@@ -434,7 +435,7 @@ export async function actionUI(request: Request) {
         const unique=new Set(rows.map(r=>r.resourceId+':'+r.feature));if(unique.size!==rows.length)throw new Error('This set has multiple edits to the same field. Undo the latest edit individually first, then review the remaining set.');
         for(const c of rows)await enqueue(store.id,'rollback',{changeId:c.id},c.id);
         await log(store.id,'Dated undo set queued',{ids,actor});
-        return data({ok:true,message:`${rows.length} changes queued for undo. Each current value is checked before restoration.`});
+        return data({ok:true,message:`${plural(rows.length,'change')} queued for undo. Each current value is checked before restoration.`});
       }
       case "rollback": {
         const c = await prisma.change.findFirstOrThrow({
@@ -465,7 +466,7 @@ export async function actionUI(request: Request) {
         const core=['dimensions','weight','materials','included'];
         const confirmed=rows.reduce((n,r)=>n+core.filter(k=>{const f=JSON.parse(r.facts)[k];return f?.confirmed&&f.value&&f.source;}).length,0);
         const possible=plan.reduce((n,r)=>n+core.filter(k=>r.facts[k]?.value&&r.facts[k]?.source&&!r.facts[k]?.confirmed).length,0);
-        return data({ok:true,csv,factImport:plan,message:`Preview for ${plan.length} products: ${rows.length?Math.round(100*confirmed/(rows.length*4)):0}% confirmed core facts now; up to ${rows.length?Math.round(100*(confirmed+possible)/(rows.length*4)):0}% if you independently check and confirm every extracted core fact. Importing alone does not confirm facts or publish content.`});
+        return data({ok:true,csv,factImport:plan,message:`Preview for ${plural(plan.length,'product')}: ${rows.length?Math.round(100*confirmed/(rows.length*4)):0}% confirmed core facts now; up to ${rows.length?Math.round(100*(confirmed+possible)/(rows.length*4)):0}% if you independently check and confirm every extracted core fact. Importing alone does not confirm facts or publish content.`});
       }
       case "suggestFacts": {
         const r=await prisma.resource.findFirstOrThrow({where:{id:value('id'),storeId:store.id}});
@@ -488,18 +489,19 @@ export async function actionUI(request: Request) {
       case "confirmSpecs":
       case "discardSpecs": {
         const {confirmAllSpecs,discardSpecs}=await import('./spec-review.server');
-        const n=intent==='confirmSpecs'?await confirmAllSpecs(store.id,value('id')):await discardSpecs(store.id,value('id'));
-        if(n)await prisma.change.updateMany({where:{storeId:store.id,resourceId:value('id'),status:'pending',feature:{in:['description','faq','seo','title']}},data:{status:'superseded'}});
+        const keys=intent==='confirmSpecs'?z.array(z.string()).min(1,'Tick the values you have checked.').parse(JSON.parse(value('keys')||'[]')):undefined;
+        const n=intent==='confirmSpecs'?await confirmAllSpecs(store.id,value('id'),keys):await discardSpecs(store.id,value('id'));
+        const replaced=n?(await prisma.change.updateMany({where:{storeId:store.id,resourceId:value('id'),status:'pending',feature:{in:['description','faq','seo','title']}},data:{status:'superseded'}})).count:0;
         await refreshCatalogueAudit(store.id);
         await log(store.id,intent==='confirmSpecs'?'Product facts confirmed in bulk review':'Unconfirmed suggestions discarded',{resourceId:value('id'),count:n,actor});
-        return data({ok:true,message:intent==='confirmSpecs'?`${n} facts confirmed.`:`${n} suggestions discarded.`});
+        return data({ok:true,message:intent==='confirmSpecs'?`${plural(n,'fact')} confirmed.${replaced?` ${plural(replaced,'waiting proposal')} replaced; prepare ${replaced===1?'it':'them'} again to use the confirmed facts.`:''}`:`${plural(n,'suggestion')} discarded.`});
       }
       case 'previewFactsImport':
       case 'importFacts': {
         const csv=value('csv');
         const resources=await prisma.resource.findMany({where:{storeId:store.id,kind:'product'}});
         const plan=previewFactImport(csv,resources);
-        if(intent==='previewFactsImport')return data({ok:true,message:`Matched ${plan.length} products. Nothing saved yet. Confirmed facts will be kept.`,factImport:plan,csv});
+        if(intent==='previewFactsImport')return data({ok:true,message:`Matched ${plural(plan.length,'product')}. Nothing saved yet. Confirmed facts will be kept.${plan.some(r=>r.kept?.length)?` ${plural(plan.reduce((n,r)=>n+(r.kept?.length||0),0),'existing value')} differ from the file and will be kept; edit them in Product details if the file is right.`:''}`,factImport:plan,csv});
         // Recompute inside the transaction so facts verified after preview are protected.
         const count=await prisma.$transaction(async tx=>{
           const current=await tx.resource.findMany({where:{storeId:store.id,kind:'product'}});
@@ -509,7 +511,7 @@ export async function actionUI(request: Request) {
         });
         await refreshCatalogueAudit(store.id);
         await log(store.id,'Unconfirmed sourced facts imported',{count,actor});
-        return data({ok:true,message:`Imported ${count} unconfirmed facts. Open Facts & keyword to check sources and confirm accurate values. No Shopify content was changed.`});
+        return data({ok:true,message:`Imported ${count} unconfirmed facts. Open Product details to check sources and confirm accurate values. No Shopify content was changed.`});
       }
       case "facts": {
         const r = await prisma.resource.findFirstOrThrow({

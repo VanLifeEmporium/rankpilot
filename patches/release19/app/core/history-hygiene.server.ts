@@ -115,7 +115,7 @@ export async function driftIssues(storeId: string, given?: { id: string; title: 
       changeId: c.id,
       severity: "warning",
       feature: c.feature === "links" ? "description" : (c.feature as Issue["feature"]),
-      detail: `RankPilot applied this ${field} on ${(c.appliedAt || c.createdAt).toISOString().slice(0, 10)} (change ${c.id}), but Shopify now holds a different value: ${preview(c.feature, actual)} instead of ${preview(c.feature, expected)}. It was edited in Shopify admin, by another app or by an import. Decide which version to keep; RankPilot will not overwrite it.`,
+      detail: `RankPilot applied this ${field} on ${(c.appliedAt || c.createdAt).toISOString().slice(0, 10)}, but Shopify now holds a different value: ${preview(c.feature, actual)} instead of ${preview(c.feature, expected)}. It was edited in Shopify admin, by another app or by an import. Decide which version to keep; RankPilot will not overwrite it.`,
     });
   }
   return issues;

@@ -1,3 +1,4 @@
+import {ConfirmButton} from './Confirm';
 import { useFetcher } from "react-router";
 /**
  * Release 15: mint a short-lived link that opens RankPilot outside the Shopify frame for bulk work.
@@ -34,10 +35,7 @@ export function AgentAccess({ enabled = true }: { enabled?: boolean }) {
           <label><input type="checkbox" name="enabled" defaultChecked={enabled} /> Allow agent workspace links for this store</label>{" "}
           <button type="submit" disabled={manage.state !== "idle"}>Save</button>
         </manage.Form>
-        <manage.Form method="post" onSubmit={(e) => { if (!window.confirm("Sign out every agent session and cancel unused links?")) e.preventDefault(); }}>
-          <input type="hidden" name="intent" value="agentRevoke" />
-          <button type="submit" disabled={manage.state !== "idle"}>Revoke all agent sessions</button>
-        </manage.Form>
+        <ConfirmButton label="Revoke all agent sessions" question="Sign out every agent session and cancel unused links?" confirmLabel="Revoke" disabled={manage.state !== "idle"} onConfirm={() => manage.submit({ intent: "agentRevoke" }, { method: "post" })} />
         {manage.data?.message && <p role="status">{manage.data.message}</p>}
       </details>
     </section>

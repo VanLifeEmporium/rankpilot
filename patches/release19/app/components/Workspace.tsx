@@ -1,3 +1,4 @@
+import {plural} from '../core/plural';
 import {ObservedWins} from './ChangeImpact';
 import {AgentAccess} from './AgentAccess';
 import {HistoryActions} from './HistoryActions';
@@ -18,6 +19,7 @@ import {featureNames,findingName,findingExplanation,issuePriority,searchSummary}
 import {FactImport} from './FactImport';
 import {SpecReview} from './SpecReview';
 import {IndexEvidence} from './IndexEvidence';
+import {DiscardBar} from './Confirm';
 import {SnoozedList,NoBarcodeBulk} from './FindingDecisions';
 import {AiAnswers} from './AiAnswers';
 import {changeStatus,reviewable} from '../core/workflow-ui';
@@ -115,7 +117,7 @@ const CatalogueRow = memo(function CatalogueRow({resource:r,payload:p,count,chec
     <td><div className="product-cell">{p.images[0] && <img src={p.images[0].url} alt="" loading="lazy" width="42" height="42"/>}
     <div><strong>{r.title}</strong><small>{r.collection || r.kind}</small></div></div></td>
     <td><span className="keyword">{r.keyword || "Unassigned"}</span></td>
-    <td><Badge tone={count?"amber":"green"}>{count?`${count} checks`:"Clear"}</Badge></td>
+    <td><Badge tone={count?"amber":"green"}>{count?plural(count,"check"):"Clear"}</Badge></td>
     <td><Button onClick={()=>open(r.id)}>{r.kind==="product"?"Product details":"Collection plan"}</Button></td></tr>;
 });
 export default function Workspace() {
@@ -163,6 +165,7 @@ export default function Workspace() {
   };
   const factsForm = useRef<HTMLFormElement>(null);
   const [factMessage,setFactMessage]=useState("");
+  const [discardFacts,setDiscardFacts]=useState(false);
   const factsDialog = useRef<HTMLDialogElement>(null);
   const appliedFactResult=useRef<typeof fetcher.data>(undefined);
   useEffect(()=>{
@@ -373,7 +376,7 @@ export default function Workspace() {
             ))}
           </select>
           <span className="spacer" />
-          <Badge>{list.length} pages</Badge>
+          <Badge>{plural(list.length,'page')}</Badge>
         </div>
         <Guidance title="Catalogue selection"/><div className="bulk-bar">
           <span>{selected.length} selected</span>
@@ -775,7 +778,7 @@ export default function Workspace() {
           )}
           {section === "products" && <section className="card"><h2>Fill the remaining gaps</h2><p>Review suggestions in Product details first. Use a supplier spreadsheet for specifications that could not be read from existing descriptions. Imported facts remain unconfirmed.</p><FactImport/></section>}
           {section === "products" && <SpecReview resources={d.resources} jobs={d.jobs}/>}
-          {section === "products" && <NoBarcodeBulk issues={issues}/>}
+          {section === "products" && <NoBarcodeBulk issues={issues} resources={d.resources}/>}
           {section === "content" && (
             <>
               <div className="notice">
@@ -1394,14 +1397,15 @@ export default function Workspace() {
         className="review-dialog facts-dialog"
         aria-labelledby="facts-heading"
         onClose={() => setFactId("")}
-        onCancel={e=>{e.preventDefault();if(!factsForm.current?.dataset.dirty || window.confirm("Discard your edits?")){factsDialog.current?.close();setFactId("");}}}
+        onCancel={e=>{e.preventDefault();if(!factsForm.current?.dataset.dirty){factsDialog.current?.close();setFactId("");}else setDiscardFacts(true);}}
       >
+        {discardFacts&&<DiscardBar onDiscard={()=>{setDiscardFacts(false);if(factsForm.current)delete factsForm.current.dataset.dirty;factsDialog.current?.close();setFactId("");}} onKeep={()=>setDiscardFacts(false)}/>}
         <div className="dialog-head">
           <h2 id="facts-heading">{factResource?.title}</h2>
           <button
             className="close"
             aria-label="Close facts"
-            onClick={() => {if(!factsForm.current?.dataset.dirty || window.confirm("Discard your edits?")){factsDialog.current?.close();setFactId("");}}}
+            onClick={() => {if(!factsForm.current?.dataset.dirty){factsDialog.current?.close();setFactId("");}else setDiscardFacts(true);}}
           >
             ×
           </button>
@@ -1473,7 +1477,7 @@ export default function Workspace() {
             )}
             </div>
             <div className="dialog-actions facts-footer">
-              <Button onClick={()=>{if(!factsForm.current?.dataset.dirty || window.confirm("Discard your edits?")){factsDialog.current?.close();setFactId("");}}}>Cancel</Button>
+              <Button onClick={()=>{if(!factsForm.current?.dataset.dirty){factsDialog.current?.close();setFactId("");}else setDiscardFacts(true);}}>Cancel</Button>
               <button className="button primary" disabled={busy}>{busy ? "Saving…" : factResource.kind==="product"?"Save product details":factResource.kind==="collection"?"Save collection plan":"Save blog plan"}</button>
             </div>
           </fetcher.Form>
