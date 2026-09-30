@@ -240,6 +240,7 @@ COPY patches/release15/ /app/
 COPY patches/release17/ /app/
 COPY patches/release18/ /app/
 COPY patches/release19/ /app/
+COPY patches/release20/ /app/
 # Release 19: production build, worker compiled at build time, dev packages removed from the runtime.
 RUN npm ci && npx prisma generate && NODE_ENV=production npm run build && node scripts/build-worker.mjs && npm prune --omit=dev
 ENV NODE_ENV=production
