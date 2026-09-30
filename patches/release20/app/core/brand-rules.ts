@@ -9,7 +9,7 @@ const SALES=['hot sale','best quality','brand new','pimp','buy now','stocks last
 // Release 20 (RP-501): technical acronyms are not shouting.
 const ALLOWED_CAPS=new Set(['USB','LED','UK','BPA','XL','XXL','XXXL','UKCA','UPF','SPF','RRP','FAQ','FAQS','PVC','EVA','HDPE','LDPE','TPU','ABS','DIY','GPS','LPG','VAT','SKU','GTIN','ISBN','IP','UV','AC','DC','PDF',
  'MIMO','MPPT','PWM','HDMI','WIFI','WLAN','LTE','DAB','AGM','BMS','NFC','OLED','LCD','RGB','RGBW','IPX','UHF','VHF','CPU','SIM','GSM','RCD','RCBO','MCB','EHU','LIFEPO','LIFEPO4','NATO','ANSI','NASA','ECO','HEPA','PTFE','PFAS','PFOA','BBQ','CCTV','DVR','USBC','QI','APP','PIR','ASAP','SOS','IPA','VHB','EPDM','UPVC','PET','RPET','OEKO','FSC','GOTS','EVA','TPE','NBR','PU','PE','PP','LED','SMD','COB','CRI','AAA','AA','ANC','TWS','USB-C','ATV','UTV','RV','SUV','VW','MPV','ISOFIX','AUX','OBD','CAN','ECU','DAB+']);
-export type RuleOptions={allow?:Iterable<string>};
+export type RuleOptions={allow?:Iterable<string>;brands?:string[]};
 /** Words allowed in capitals for one product: its vendor and title words, plus the merchant's allowlist. */
 export function allowedCaps(...sources:(string|string[]|undefined)[]){const out=new Set<string>();for(const src of sources)for(const w of [src||''].flat().join(' ').split(/[^A-Za-z0-9+-]+/))if(w)out.add(w.toUpperCase());return out;}
 const US_SPELLINGS:[RegExp,string][]=[[/\bcolou?r(s|ed|ful)?\b/gi,'colour'],[/\borganiz(e|es|ed|ing|er|ers|ation)\b/gi,'organise'],[/\bgray\b/gi,'grey'],[/\baluminum\b/gi,'aluminium'],[/\bcenter(s|ed)?\b/gi,'centre'],[/\bfavorite(s)?\b/gi,'favourite']];
@@ -73,6 +73,12 @@ export function proposalText(value:unknown):string{
  if(value&&typeof value==='object'){const v=value as {title?:string;description?:string};return `${v.title||''}\n${v.description||''}`;}
  return '';
 }
+/** Release 20 (RP-202): brand names the old title had and the new one drops (people search for them). */
+export function lostBrand(before:string,after:string,brands:string[]=[]){
+ const has=(t:string,b:string)=>new RegExp(`(^|[^\\p{L}\\p{N}])${b.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?=$|[^\\p{L}\\p{N}])`,'iu').test(t);
+ return [...new Set(brands.filter(b=>b.trim().length>1))].filter(b=>has(before||'',b)&&!has(after||'',b));
+}
+const titleText=(feature:string,v:unknown)=>feature==='seo'&&v&&typeof v==='object'?String((v as {title?:string}).title||''):typeof v==='string'?v:'';
 /** Release 19: the gate every writer passes before a change can be approved. */
 export function brandGate(feature:string,before:unknown,after:unknown,facts:Facts={},opts:RuleOptions={}){
  if(!['seo','title','description','faq'].includes(feature))return [];
@@ -81,5 +87,6 @@ export function brandGate(feature:string,before:unknown,after:unknown,facts:Fact
  const hits=newRuleErrors(b,a,opts);if(hits.length)problems.push(ruleSummary(hits));
  problems.push(...unverifiedClaims(a,facts,b));
  if(feature==='description'){const cut=wordCut(b,a);if(cut)problems.push(cut);}
+ if(['seo','title'].includes(feature)){const lost=lostBrand(titleText(feature,before),titleText(feature,after),opts.brands);if(lost.length)problems.push(`The new title drops the brand ${lost.map(b=>`“${b}”`).join(', ')}, which people search for; keep it`);}
  return problems;
 }

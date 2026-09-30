@@ -1,12 +1,20 @@
 import {load} from 'cheerio';
 import type {Facts,Payload} from './types';
+import {brandList,detectBrand,isOwnLabel,type BrandProposal} from './brand-detect';
 /** Release 19: product checks that need the whole catalogue (template FAQs, vendors) or real validation (GTINs). */
 
 // ---- R19-05: template FAQs ----
 export function faqQuestionTexts(p:Payload){
  const $=load(p.descriptionHtml||'');
- const fromBody=$('h2,h3,h4,h5,h6,strong,b,dt,summary').toArray().map(e=>$(e).text().replace(/\s+/g,' ').trim()).filter(t=>/\?$/.test(t)&&t.length<200);
- return [...new Set([...fromBody,...(p.faqs||[]).map(f=>f.question)])];
+ const clean=(t:string)=>t.replace(/\s+/g,' ').trim();
+ const fromBody=$('h2,h3,h4,h5,h6,strong,b,dt,summary').toArray().map(e=>clean($(e).text())).filter(t=>/\?$/.test(t)&&t.length<200);
+ // Release 20 (RP-402): plain paragraphs or list items ending "?" (or starting "Q:") after an FAQ heading.
+ const inFaq:string[]=[];let open=false;
+ $('h2,h3,h4,h5,h6,p,li,dt,strong,b').each((_,e)=>{const t=clean($(e).text());const name=(e as unknown as {name:string}).name;
+  if(/^h[2-6]$/.test(name)||(['strong','b'].includes(name)&&!/\?$/.test(t))){if(/\b(faqs?|frequently asked|questions?)\b/i.test(t)&&!/\?$/.test(t)){open=true;return;}if(/^h[2-6]$/.test(name)&&!/\?$/.test(t))open=false;}
+  if(open&&['p','li','dt'].includes(name)&&t.length<200){const q=t.replace(/^Q\s*[:.]\s*/i,'');if(/\?$/.test(q))inFaq.push(q);else if(/^Q\s*[:.]/i.test(t))inFaq.push(q.split(/\?/)[0]+'?');}
+ });
+ return [...new Set([...fromBody,...inFaq,...(p.faqs||[]).map(f=>f.question)])];
 }
 /** A question with the product's own name removed, lower-cased, punctuation folded. */
 export function normaliseQuestion(question:string,title:string){
@@ -22,7 +30,7 @@ export function gtinCheckDigitValid(code:string){
  const sum=digits.reverse().reduce((n,d,i)=>n+d*(i%2===0?3:1),0);
  return (10-(sum%10))%10===check;
 }
-export type BarcodeProblem={code:string;severity:'warning'|'notice';detail:string};
+export type BarcodeProblem={code:string;severity:'warning'|'notice';detail:string;brand?:BrandProposal};
 export const isBook=(p:Payload)=>/\bbooks?\b/i.test(p.productType||'');
 export function barcodeProblems(p:Payload):BarcodeProblem[]{
  const out:BarcodeProblem[]=[];
@@ -40,16 +48,19 @@ export function barcodeProblems(p:Payload):BarcodeProblem[]{
 const PLACEHOLDER=/^(n\/?a|none|unbranded|un-branded|no brand|generic|default|-|)$/i;
 export const vendorKey=(v:string)=>v.toLowerCase().replace(/&/g,' and ').replace(/\b(ltd|limited|uk|co|company|inc|llc|plc)\b/g,' ').replace(/[^a-z0-9]+/g,'');
 export type VendorContext={storeName:string;vendors:Map<string,Map<string,number>>};
-export function vendorProblems(p:Payload,ctx:VendorContext):BarcodeProblem[]{
+export function vendorProblems(p:Payload,ctx:VendorContext,facts:Facts={}):BarcodeProblem[]{
  const out:BarcodeProblem[]=[];const vendor=(p.vendor||'').trim();
  if(PLACEHOLDER.test(vendor)){out.push({code:'vendor-placeholder',severity:'warning',detail:`The vendor is “${vendor||'(blank)'}”. Set the real brand (the manufacturer, or ${ctx.storeName||'your store'} for own-label items) so Google Shopping shows it.`});return out;}
  const spellings=ctx.vendors.get(vendorKey(vendor));
  if(spellings&&spellings.size>1){const preferred=[...spellings].sort((a,b)=>b[1]-a[1])[0][0];if(preferred!==vendor)out.push({code:'vendor-near-duplicate',severity:'warning',detail:`Vendor “${vendor}” is spelt differently elsewhere (${[...spellings.keys()].map(s=>`“${s}”`).join(', ')}). Use one spelling, e.g. “${preferred}”.`});}
  const store=vendorKey(ctx.storeName);
  if(store&&vendorKey(vendor)===store){
-  if(isBook(p))out.push({code:'vendor-store-on-book',severity:'warning',detail:`This book lists ${vendor} as its brand. Use the publisher as the vendor.`});
-  else{const title=p.title.toLowerCase();const other=[...ctx.vendors.entries()].map(([k,m])=>({k,name:[...m.keys()][0]})).find(v=>v.k!==store&&v.name.length>=3&&!PLACEHOLDER.test(v.name)&&title.startsWith(v.name.toLowerCase()+' '));
-   if(other)out.push({code:'vendor-mismatch',severity:'warning',detail:`The title starts with “${other.name}” but the vendor is ${vendor}. If ${other.name} makes it, set the vendor to ${other.name}.`});}
+  if(isBook(p))out.push({code:'vendor-store-on-book',severity:'warning',detail:`This book lists ${vendor} as its brand. Use the publisher as the vendor. Open the book flow to find the publisher and ISBN.`});
+  else if(!isOwnLabel(p,facts)){
+   // Release 20 (RP-201): the real brand from the title, a Brand line or the handle, with its evidence.
+   const found=detectBrand(p,brandList([...ctx.vendors.values()].map(m=>[...m.keys()][0]),ctx.storeName));
+   if(found){const ev=found.evidence[0];out.push({code:'brand-is-store',severity:'warning',brand:found,detail:`The brand is ${vendor} (your store), but the ${ev.where} names ${found.vendor}: “${ev.text.slice(0,120)}”. Propose vendor “${found.vendor}” (${found.confidence} confidence) so Google Shopping and brand searches show the manufacturer. If this is your own label, tag the product “own-label”.`});}
+  }
  }
  return out;
 }
@@ -134,3 +145,41 @@ export function duplicateAlts(images:{alt:string}[]){
 
 /** Release 20 (RP-104): does the page mention delivery (used to spot a store-wide delivery line)? */
 export const mentionsDelivery=(p:Payload)=>PATTERNS.delivery.test(shopperText(p));
+
+// ---- Release 20 (RP-401): the same sentence on many products ----
+const DELIVERY_BLOCK=/\b(?:delivery|delivered|dispatch(?:ed)?|shipping|postage|returns?|refunds?)\b/i;
+/** Sentences a shopper reads, with the product's own name replaced, skipping short shared delivery blocks. */
+export function contentUnits(p:Payload){
+ const $=load(`<div>${p.descriptionHtml||''}</div>`,null,false);
+ const out=new Map<string,string>();
+ $('p,li,h2,h3,h4,h5,h6,dt,dd,summary,td').each((_,e)=>{
+  if($(e).find('p,li,h2,h3,h4,h5,h6,table').length)return;
+  const block=$(e).text().replace(/\s+/g,' ').trim();if(!block)return;
+  const words=block.split(' ').length;
+  // A short delivery or returns paragraph is a shared store block, answered once (RP-104).
+  if(words<40&&DELIVERY_BLOCK.test(block))return;
+  for(const sentence of block.match(/[^.!?]+[.!?]?/g)||[]){
+   const t=sentence.trim();if(t.split(/\s+/).length<5||t.length>200)continue;
+   const key=normaliseQuestion(t,p.title);if(key&&!out.has(key))out.set(key,p.title?t.split(p.title).join('<product>'):t);
+   if(out.size>=40)return false;
+  }
+ });
+ return out;
+}
+// ---- Release 20 (RP-402): suggested FAQ questions from the facts a page already has ----
+const FAQ_QUESTIONS:Partial<Record<AnswerKey,{question:string;facts:string[]}>>={
+ size:{question:'How big is it?',facts:['dimensions','capacity']},material:{question:'What is it made from?',facts:['materials']},included:{question:'What comes in the box?',facts:['included']},
+ weight:{question:'How much does it weigh?',facts:['weight']},care:{question:'How do I clean it?',facts:['care']},fit:{question:'Will it fit in my van?',facts:['compatibility']},
+};
+export type FaqSuggestion={question:string;answer:string;source:string};
+export function faqSuggestions(p:Payload,facts:Facts,pageFacts:Facts){
+ const suggestions:FaqSuggestion[]=[];const needed:string[]=[];
+ for(const q of relevantQuestions(p)){
+  const spec=FAQ_QUESTIONS[q.key];if(!spec)continue;
+  const key=spec.facts.find(k=>facts[k]?.confirmed&&facts[k].value?.trim())||spec.facts.find(k=>pageFacts[k]?.value?.trim());
+  const fact=key?(facts[key]?.confirmed?facts[key]:pageFacts[key]):undefined;
+  if(fact&&key)suggestions.push({question:spec.question,answer:fact.value.slice(0,300),source:fact.confirmed?`Confirmed fact (${fact.source})`:fact.source});
+  else needed.push(q.label.replace(/^No /,'').replace(/ given$/,''));
+ }
+ return {suggestions:suggestions.slice(0,4),needed};
+}

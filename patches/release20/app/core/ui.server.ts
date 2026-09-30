@@ -261,6 +261,28 @@ export async function actionUI(request: Request) {
         await refreshCatalogueAudit(store.id);
         return data({ok:true,message:"Recorded: Shopify's current value is kept. Nothing was written to Shopify; RankPilot's earlier change stays in history with its undo."});
       }
+      case "proposeBrands": {
+        // Release 20 (RP-201): pending vendor changes from brand-is-store findings (one product or all).
+        const { proposeBrands } = await import("./brand-proposals.server");
+        const ids = f.getAll("ids").map(String).filter(Boolean);
+        const { results } = await proposeBrands(store.id, { ids: ids.length ? ids : undefined, actor });
+        const pending = results.filter((r) => r.status === "pending");
+        const warned = results.filter((r) => r.warnings?.length);
+        const failed = results.filter((r) => !r.ok);
+        if (!results.length) return data({ ok: false, message: "No products with a detected brand. Run a fresh audit first." });
+        return data({ ok: !failed.length || pending.length > 0, changeId: pending.length === 1 ? pending[0].changeId : undefined,
+          message: `${plural(pending.length, "brand change")} ready for review.${warned.length ? ` ${warned.length} affect smart collections: ${warned[0].warnings![0]}` : ""}${failed.length ? ` ${failed.length} not prepared: ${failed[0].message}` : ""}${results.length - pending.length - failed.length ? ` ${results.length - pending.length - failed.length} unchanged.` : ""}` });
+      }
+      case "bookSuggest": {
+        const { suggestBook } = await import("./brand-proposals.server");
+        const r = await suggestBook(store.id, value("id"));
+        return data({ ok: r.ok, message: r.message });
+      }
+      case "bookApply": {
+        const { applyBook } = await import("./brand-proposals.server");
+        const r = await applyBook(store.id, value("id"), { isbn: value("isbn"), publisher: value("publisher"), editionConfirmed: value("editionConfirmed") === "on", actor });
+        return data({ ok: true, message: r.message, changeId: r.changeIds[0] });
+      }
       case "noBarcode": {
         const ids=f.getAll('ids').map(String).filter(Boolean).slice(0,500);
         if(!ids.length)throw new Error('Select at least one product.');

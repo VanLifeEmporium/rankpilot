@@ -56,9 +56,10 @@ describe("R19-05 template FAQs don't count", () => {
     const rows = Array.from({ length: 30 }, () => product());
     rows.push(product({ faqs: [{ question: "Will it fit under the passenger seat?", answer: "Yes, it is 20 cm tall." }] }));
     rows.push(product({ descriptionHtml: TEMPLATE.replace("{name}", "Rug") + "<h3>Can the rug go in the washing machine?</h3><p>Yes.</p>" }));
-    const flagged = codes(auditCatalogue(rows, opts), "missing-product-faq");
+    // Release 20 (RP-402): template-only questions are now "generic-faq" with suggested questions.
+    const flagged = codes(auditCatalogue(rows, opts), "generic-faq");
     expect(flagged).toHaveLength(30);
-    expect(flagged[0].detail).toContain("Shared template questions do not count");
+    expect(flagged[0].detail).toContain("only FAQ questions are the store-wide template");
   });
 });
 
@@ -102,7 +103,9 @@ describe("R19-07 vendor checks", () => {
     expect(by(rows[1].id)).toEqual(["vendor-store-on-book"]);
     expect(by(rows[4].id)).toEqual(["vendor-near-duplicate"]);
     expect(by(rows[2].id)).toEqual([]);
-    expect(by(rows[5].id)).toEqual(["vendor-mismatch"]);
+    // Release 20 (RP-201): the brand in the title is proposed as the vendor.
+    expect(by(rows[5].id)).toEqual([]);
+    expect(r.issues.find((i) => i.resourceId === rows[5].id && i.code === "brand-is-store")?.brand).toMatchObject({ vendor: "Outwell", confidence: "high" });
     expect(by(rows[6].id)).toEqual([]);
   });
 });

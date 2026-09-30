@@ -115,8 +115,9 @@ export async function refreshCatalogueAudit(storeId:string) {
  const resources={length:count};
  const hygiene=await import("./history-hygiene.server");
  const drift=await hygiene.driftIssues(storeId);
- const retained=JSON.parse(latest.issues).filter((i:{code:string})=>!catalogueCodes.has(i.code)&&i.code!=='changed-outside');
- await prisma.audit.update({where:{id:latest.id},data:{score:checked.score,aeoScore:checked.aeoScore,resourceCount:resources.length,issues:JSON.stringify([...checked.issues,...drift,...retained]),coverage:JSON.stringify({...JSON.parse(latest.coverage),answerReadiness:checked.answerReadiness,catalogueRecheckedAt:new Date().toISOString()})}});
+ const retained=JSON.parse(latest.issues).filter((i:{code:string})=>!catalogueCodes.has(i.code)&&i.code!=='changed-outside'&&i.code!=='title-missing-search-terms');
+ const signals=await import('./search-signals.server').then(m=>m.searchSignalIssues(storeId,checked.issues)).catch(()=>checked.issues);
+ await prisma.audit.update({where:{id:latest.id},data:{score:checked.score,aeoScore:checked.aeoScore,resourceCount:resources.length,issues:JSON.stringify([...signals,...drift,...retained]),coverage:JSON.stringify({...JSON.parse(latest.coverage),answerReadiness:checked.answerReadiness,catalogueRecheckedAt:new Date().toISOString()})}});
  await recordScore(storeId).catch(error=>log(storeId,"Score snapshot unavailable",{message:(error as Error).message}));
 }
 export function sameField(actual:unknown,expected:unknown):boolean {
@@ -163,6 +164,8 @@ export function fieldValue(p: Payload, feature: string) {
       return p.handle;
     case "vendor":
       return p.vendor || "";
+    case "barcode":
+      return (p.variants || []).map((v) => ({ id: v.id || "", barcode: v.barcode || "" }));
     case "description":
     case "links":
       return p.descriptionHtml;
@@ -183,6 +186,8 @@ export function withField(p:Payload,feature:string,value:unknown):Payload {
  else if(feature==='seo')next.seo=z.object({title:z.string(),description:z.string()}).parse(value);
  else if(feature==='title')next.title=z.string().parse(value);
  else if(feature==='handle')next.handle=z.string().parse(value);
+ else if(feature==='vendor')next.vendor=z.string().parse(value);
+ else if(feature==='barcode'){const rows=z.array(z.object({id:z.string(),barcode:z.string()})).parse(value);next.variants=(next.variants||[]).map(v=>({...v,...(rows.find(r=>r.id&&r.id===v.id)?{barcode:rows.find(r=>r.id===v.id)!.barcode}:{})}));}
  else if(feature==='alt'){
   const alts=z.array(z.object({id:z.string(),alt:z.string()})).parse(value);
   next.images=next.images.map(i=>({...i,...alts.find(v=>v.id===i.id)}));
@@ -353,6 +358,11 @@ export async function audit(storeId: string) {
     const { deadPagesWithImpressions } = await import("./index-hygiene.server");
     result.issues.push(...(await deadPagesWithImpressions(storeId, store.demo ? {} : { confirm: async (url) => { const r = await publicFetch(new URL(new URL(url).pathname, store.domain).href, { method: "HEAD" }); await r.body?.cancel(); return r.status; } })));
   } catch (e) { await log(storeId, "Search Console page check unavailable", { message: (e as Error).message }); }
+  // Release 20 (RP-202, RP-401): titles missing searched brand/model words; template pages ranked by impressions.
+  try {
+    const { searchSignalIssues } = await import("./search-signals.server");
+    result.issues = await searchSignalIssues(storeId, result.issues);
+  } catch (e) { await log(storeId, "Search Console title check unavailable", { message: (e as Error).message }); }
   const row = await prisma.audit.create({
     data: {
       storeId,
@@ -430,6 +440,14 @@ export async function propose(
     related.map((r) => ({ title: r.title, url:r.url })),
   );
   if(feature==='seo'&&!sourceOnly){const quality=metadataQuality(p,proposal.after as Payload['seo'],cfg);proposal.after=quality.after;proposal.reasons.push(...quality.notes);}
+  // Release 20 (RP-202): a new title must keep the brand people search for.
+  if(['seo','title'].includes(feature)&&JSON.stringify(proposal.before)!==JSON.stringify(proposal.after)){
+   const {productBrands,storeNames}=await import('./brand-detect');const {lostBrand}=await import('./brand-rules');
+   const st=await prisma.store.findUnique({where:{id:storeId},select:{settings:true,discoveries:true}});
+   const t=(v:unknown)=>feature==='seo'?String((v as {title?:string})?.title||''):String(v||'');
+   const lost=lostBrand(t(proposal.before),t(proposal.after),productBrands(p,storeNames(st)));
+   if(lost.length)throw new Error(`No proposal created: the new title drops the brand ${lost.map(b=>`“${b}”`).join(', ')}, which people search for. The current title is kept.`);
+  }
   if(feature==='links')proposal.reasons.push(...related.map(r=>r.impact+' priority: '+r.reason));
   if (proposal.blockers.length && JSON.stringify(proposal.before) === JSON.stringify(proposal.after))
     throw new Error(proposal.blockers.join(" "));
@@ -479,8 +497,9 @@ export async function approve(storeId: string, id: string, actor: string, expect
   }
   // Release 19: brand rules and unverified claims apply to every writer (merchant, AI, agent).
   {const {brandGate,allowedCaps}=await import('./brand-rules');const r=await prisma.resource.findFirst({where:{id:row.resourceId,storeId},select:{facts:true,payload:true}});
-   const st=await prisma.store.findUnique({where:{id:storeId},select:{settings:true}});const pv=(()=>{try{return JSON.parse(r?.payload||'{}');}catch{return {};}})();
-   const problems=brandGate(row.feature,JSON.parse(row.before),JSON.parse(row.after),JSON.parse(r?.facts||'{}'),{allow:allowedCaps(pv.vendor,pv.title,settings(st?.settings||'{}').capsAllowlist)});
+   const st=await prisma.store.findUnique({where:{id:storeId},select:{settings:true,discoveries:true}});const pv=(()=>{try{return JSON.parse(r?.payload||'{}');}catch{return {};}})();
+   const {productBrands,storeNames}=await import('./brand-detect');
+   const problems=brandGate(row.feature,JSON.parse(row.before),JSON.parse(row.after),JSON.parse(r?.facts||'{}'),{allow:allowedCaps(pv.vendor,pv.title,settings(st?.settings||'{}').capsAllowlist),brands:pv.title?productBrands(pv,storeNames(st)):[]});
    if(problems.length)throw new Error(`This change breaks the store's content rules: ${problems.join('; ')}. Edit the wording, then approve.`);}
   if (row.status !== "pending")
     throw new Error("This change is no longer awaiting approval");

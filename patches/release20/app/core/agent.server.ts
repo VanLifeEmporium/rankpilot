@@ -23,6 +23,7 @@ import { publicFetch, limitedText } from "./crawl.server";
 import { dismissChanges, settleStaleChanges } from "./history-hygiene.server";
 import { applyFindingState } from "./finding-state";
 import { friendlyError } from "./db-errors";
+import { productBrands, storeNames } from "./brand-detect";
 import { ProtectedPageError } from "./protected-pages.server";
 import { allowedCaps, brandGate, brandRuleHits, newRuleErrors, ruleErrors, ruleSummary, unverifiedClaims, wordCut } from "./brand-rules";
 
@@ -301,13 +302,13 @@ async function waitForApplies(storeId: string, ids: string[], budgetMs: number) 
   }
 }
 
-class BusyError extends Error {}
+export class BusyError extends Error {}
 /**
  * Create one reviewed change. Refuses while another update is applying to the page and
  * supersedes pending previews for the same field, so an older preview accepted later
  * cannot silently undo this one. Body edits (description and links) count as one field.
  */
-async function stageChange(storeId: string, resourceId: string, feature: string, before: unknown, after: unknown, reasons: string[]) {
+export async function stageChange(storeId: string, resourceId: string, feature: string, before: unknown, after: unknown, reasons: string[]) {
   // Release 20 (RP-603): never write over an edit made in Shopify that the merchant has not resolved.
   const { assertNotProtected } = await import("./protected-pages.server");
   await assertNotProtected(storeId, resourceId);
@@ -361,7 +362,7 @@ export async function bulkSeo(storeId: string, input: unknown) {
       const after = { title: item.title, description: item.description };
       const warnings = seoWarnings(after.title, after.description, shopName);
       // Release 19: brand rules and unverified claims make an SEO item invalid, including in a dry run.
-      const blocked = brandGate("seo", before, after, JSON.parse(r.facts || "{}"), { allow: allowedCaps(live.vendor, live.title, settings(store.settings).capsAllowlist) });
+      const blocked = brandGate("seo", before, after, JSON.parse(r.facts || "{}"), { allow: allowedCaps(live.vendor, live.title, settings(store.settings).capsAllowlist), brands: productBrands(live, storeNames(store)) });
       if (blocked.length) { results.push({ resourceId, ok: false, status: "invalid", message: blocked.join("; "), warnings }); continue; }
       if (before.title.trim() === after.title && before.description.trim() === after.description) { results.push({ resourceId, ok: true, status: "unchanged", message: "Already saved" }); continue; }
       if (await isBusy(storeId, r.id)) { results.push({ resourceId, ok: false, status: "busy", message: "Another update is applying to this page" }); continue; }
@@ -951,7 +952,7 @@ export async function bulkProduct(storeId: string, input: unknown) {
       const p: Payload = JSON.parse(r.payload);
       for (const [field, value, before] of [["title", item.title, p.title], ["vendor", item.vendor, p.vendor || ""]] as const) {
         if (!value || value === before) continue;
-        const problems = field === "title" ? brandGate("title", before, value, {}, { allow: allowedCaps(p.vendor, p.title, value) }) : /^(n\/?a|none|unbranded|un-branded)$/i.test(value) ? ["Use the real brand, not a placeholder"] : [];
+        const problems = field === "title" ? brandGate("title", before, value, {}, { allow: allowedCaps(p.vendor, p.title, value), brands: productBrands(p, storeNames(await prisma.store.findUnique({ where: { id: storeId }, select: { settings: true, discoveries: true } }))) }) : /^(n\/?a|none|unbranded|un-branded)$/i.test(value) ? ["Use the real brand, not a placeholder"] : [];
         if (problems.length) { results.push({ resourceId: r.id, title: r.title, field, ok: false, status: "invalid", message: problems.join("; ") }); continue; }
         if (body.dryRun) { results.push({ resourceId: r.id, title: r.title, field, ok: true, status: "valid", message: `${before || "(blank)"} → ${value}` }); continue; }
         const row = await stageChange(storeId, r.id, field, before, value, [AGENT_REASON]);

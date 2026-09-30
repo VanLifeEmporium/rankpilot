@@ -9,7 +9,9 @@ export type Feature =
   | "faq"
   | "links"
   /** Release 19: product vendor (brand), agent-proposed and merchant-approved. */
-  | "vendor";
+  | "vendor"
+  /** Release 20 (RP-203): variant barcodes (ISBN for books), merchant-confirmed. */
+  | "barcode";
 export const features: Feature[] = [
   "title",
   "description",
@@ -40,7 +42,7 @@ export type Payload = {
   vendor?: string;
   productType?: string;
   tags?: string[];
-  variants?: { sku: string; barcode: string; price: string; selectedOptions?: {name:string;value:string}[] }[];
+  variants?: { id?: string; sku: string; barcode: string; price: string; selectedOptions?: {name:string;value:string}[] }[];
   faqNamespace?: string;
   faqs?: { question: string; answer: string }[];
   /** Release 19: product metafields with plain values (read-only; category attributes, sizes, weights). */
@@ -51,6 +53,8 @@ export type Payload = {
   published?: boolean;
   productsCount?: number;
   publicationCount?: number;
+  /** Release 20 (RP-201): smart collection rules (collections only). */
+  rules?: { column: string; relation?: string; condition: string }[];
   raw?: unknown;
 };
 export type Issue = {
@@ -72,6 +76,8 @@ export type Issue = {
   suggestion?: { path: string; title: string };
   /** Release 20 (RP-301): the page is not published on the Online Store. */
   unpublished?: boolean;
+  /** Release 20 (RP-201): the manufacturer found in the title, description or handle. */
+  brand?: { vendor: string; confidence: "high" | "medium"; evidence: { where: string; text: string }[] };
 };
 export type Settings = {
   autopilot: Partial<Record<Feature, boolean>>;

@@ -2,7 +2,7 @@ import { specFacts } from "./spec-extract";
 import { confirmedNoBarcode } from "./finding-state";
 import { blockingMarkup } from "./html-cleanup";
 import { ruleErrors, ruleSummary, allowedCaps } from "./brand-rules";
-import { mentionsDelivery, relevantQuestions, articleFacts, nextSeason, duplicateAlts, faqQuestionTexts, normaliseQuestion, barcodeProblems, vendorProblems, vendorKey, answeredQuestions, ANSWER_QUESTIONS, type VendorContext } from "./catalogue-checks";
+import { contentUnits, faqSuggestions, mentionsDelivery, relevantQuestions, articleFacts, nextSeason, duplicateAlts, faqQuestionTexts, normaliseQuestion, barcodeProblems, vendorProblems, vendorKey, answeredQuestions, ANSWER_QUESTIONS, type VendorContext } from "./catalogue-checks";
 import {supplierSignals} from './content-policy';
 import { load } from "cheerio";
 import {
@@ -99,10 +99,11 @@ export type AuditResource = {
   keyword: string;
   facts: string;
 };
-export type AuditContext = { templateQuestions: Set<string>; vendors: VendorContext["vendors"]; storeName: string; deliveryPolicy: boolean; sharedDelivery?: boolean; capsAllowlist?: string[] };
+export type AuditContext = { templateQuestions: Set<string>; vendors: VendorContext["vendors"]; storeName: string; deliveryPolicy: boolean; sharedDelivery?: boolean; capsAllowlist?: string[]; templateSentences?: Map<string, string>; productCount?: number };
 /** Release 19: first pass over the catalogue — shared FAQ questions and vendor spellings. */
 export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boolean; capsAllowlist?: string[] } = {}) {
   const questions = new Map<string, number>();
+  const sentences = new Map<string, { n: number; sample: string }>();
   let withDelivery = 0;
   const vendors = new Map<string, Map<string, number>>();
   let products = 0;
@@ -114,6 +115,9 @@ export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boole
         const p: Payload = JSON.parse(r.payload);
         for (const q of new Set(faqQuestionTexts(p).map((q) => normaliseQuestion(q, p.title)))) questions.set(q, (questions.get(q) || 0) + 1);
         if (mentionsDelivery(p)) withDelivery++;
+        for (const [k, sample] of contentUnits(p)) { const e = sentences.get(k); if (e) e.n++; else sentences.set(k, { n: 1, sample }); }
+        // Keep memory bounded on large catalogues: sentences seen once are dropped first.
+        if (sentences.size > 60000) for (const [k, e] of sentences) if (e.n === 1) sentences.delete(k);
         const v = (p.vendor || "").trim();
         if (v) { const k = vendorKey(v); const m = vendors.get(k) || new Map<string, number>(); m.set(v, (m.get(v) || 0) + 1); vendors.set(k, m); }
       }
@@ -121,8 +125,10 @@ export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boole
     context(): AuditContext {
       // A question on more than 10% of products is a template, not a product-specific FAQ.
       const templateQuestions = new Set([...questions].filter(([, n]) => products >= 10 && n > products * 0.1).map(([q]) => q));
+      // Release 20 (RP-401): a sentence on at least 20% of products (and 5 or more) is repeated template text.
+      const templateSentences = new Map([...sentences].filter(([, e]) => products >= 10 && e.n >= Math.max(5, products * 0.2)).sort((a, b) => b[1].n - a[1].n).slice(0, 10).map(([k, e]) => [k, e.sample]));
       // A delivery line on most products is a shared, store-level answer.
-      return { templateQuestions, vendors, capsAllowlist: opts.capsAllowlist || [], storeName: opts.storeName || "", deliveryPolicy: !!opts.deliveryPolicy, sharedDelivery: products > 0 && withDelivery / products >= 0.5 };
+      return { templateQuestions, templateSentences, productCount: products, vendors, capsAllowlist: opts.capsAllowlist || [], storeName: opts.storeName || "", deliveryPolicy: !!opts.deliveryPolicy, sharedDelivery: products > 0 && withDelivery / products >= 0.5 };
     },
   };
 }
@@ -152,6 +158,7 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
     factsPresent = 0;
   let products_ = 0, answeredTotal = 0, askedTotal = 0, deliveryMissing = 0;
   const missingAnswers = new Map<string, { id: string; title: string }[]>();
+  const templateHits = new Map<string, string[]>();
   const add_ = (resources: AuditResource[]) => {
   for (const r of resources) {
     count++;
@@ -178,7 +185,7 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
     // Release 20 (RP-301): unpublished pages keep their findings (labelled) but are left out of scores.
     const unpublished = p.published === false;
     if (!unpublished) checks += 7;
-    const title = p.seo.title || "";
+    const title = p.seo?.title || "";
     if (!title)
       add(
         "missing-meta-title",
@@ -280,14 +287,25 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
       }
       // Release 19: questions shared by more than 10% of products are a template and do not count.
       const ownQuestions = faqQuestionTexts(p).filter((q) => !ctx.templateQuestions.has(normaliseQuestion(q, p.title)));
-      if (!ownQuestions.length)
+      // Release 20 (RP-402): questions that are only the store-wide template get suggestions drawn from the page's facts.
+      const anyQuestions = faqQuestionTexts(p).length > 0;
+      if (!ownQuestions.length && anyQuestions) {
+        const { suggestions, needed } = faqSuggestions(p, f, specFacts(p.descriptionHtml || ""));
+        add(
+          "generic-faq",
+          "notice",
+          `The only FAQ questions are the store-wide template. ${suggestions.length ? `Ask what shoppers need instead: ${suggestions.map((x) => `“${x.question}” ${x.answer} (source: ${x.source.slice(0, 100)})`).join("; ")}.` : "No facts on the page answer shopper questions yet."}${needed.length ? ` Confirm ${needed.join(", ")} to answer more.` : ""}`,
+          "faq",
+        );
+      } else if (!ownQuestions.length)
         add(
           "missing-product-faq",
           "notice",
           "No product-specific FAQs. Shared template questions do not count. Add answers grounded in confirmed product facts.",
           "faq",
         );
-      for (const b of [...barcodeProblems(p), ...vendorProblems(p, ctx)]) add(b.code, b.severity, b.detail);
+      if (ctx.templateSentences?.size) for (const k of contentUnits(p).keys()) if (ctx.templateSentences.has(k)) { const list = templateHits.get(k) || []; list.push(r.id); templateHits.set(k, list); }
+      for (const b of [...barcodeProblems(p), ...vendorProblems(p, ctx, f)]) { add(b.code, b.severity, b.detail, b.brand ? "vendor" : undefined); if (b.brand) issues[issues.length - 1].brand = b.brand; }
       if (!unpublished) {
       products_++;
       const answered = answeredQuestions(p, f, { deliveryPolicy: ctx.deliveryPolicy });
@@ -317,6 +335,14 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
     return { resourceId: `answers:${q.key}`, title: q.label, code: `answer-missing-${q.key}`, severity: "notice" as const, count: list.length, resourceIds: list.slice(0, 1000).map((x) => x.id),
       detail: `${list.length} ${list.length === 1 ? "product does" : "products do"} not answer this in the description, confirmed facts or product fields. For example: ${list.slice(0, 5).map((x) => x.title).join(", ")}.` };
   });
+  // Release 20 (RP-401): one store-level finding per repeated sentence, with its page count.
+  let t = 0;
+  for (const [k, sample] of ctx.templateSentences || []) {
+    const ids = templateHits.get(k) || [];
+    if (!ids.length) continue;
+    answerIssues.push({ resourceId: `template:${++t}`, title: "Same text on many products", code: "repeated-template", severity: "notice", count: ids.length, resourceIds: ids.slice(0, 1000),
+      detail: `“${sample}” appears on ${ids.length} of ${ctx.productCount || ids.length} products. Replace it with detail specific to each product, or remove it: shoppers and AI answers skip text that is the same everywhere.` });
+  }
   // Delivery: answered for the store when the delivery policy is set, or a delivery line is shared by most products.
   const storeDelivery = ctx.deliveryPolicy || ctx.sharedDelivery || (products_ > 0 && deliveryMissing === 0);
   if (products_ && !storeDelivery) answerIssues.push({ resourceId: "answers:delivery", title: "No delivery information", code: "answer-missing-delivery", severity: "notice", count: 1, detail: "The store has no delivery information that shoppers or AI answers can find. Add delivery times and costs once (Settings › store policies, or a shared delivery line on product pages); it then counts for every product." });
