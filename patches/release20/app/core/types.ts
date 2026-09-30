@@ -94,6 +94,8 @@ export type Settings = {
   keptShopify?: Record<string, string>;
   /** Release 20 (RP-501): words the merchant allows in capitals (brands, model names). */
   capsAllowlist?: string[];
+  /** Release 20 (RP-403): learned rules only count rejections after this time (Settings › reset). */
+  learnedResetAt?: string;
   weekly: boolean;
   requeue: boolean;
   gscSite: string;

@@ -395,6 +395,8 @@ export async function propose(
     where: { id: storeId },
   });
   const cfg = settings(store.settings);
+  // Release 20 (RP-403): a learned keep-the-store-name rule overrides “omit” for new titles.
+  if(feature==='seo'&&cfg.titleBrandMode==='omit'){const {learnedRules}=await import('./learned-rules.server');if((await learnedRules(storeId)).rules.some(r=>r.key==='keepStoreSuffix'))cfg.titleBrandMode='preserve';}
   const feedback=await prisma.event.findMany({where:{storeId,message:'Change rejected'},orderBy:{createdAt:'desc'}});
   const rejection=feedback.map(e=>JSON.parse(e.detail)).find(e=>e.resourceId===resourceId&&e.reason&&e.reason!=='No reason supplied');
   if(rejection)cfg.brandVoice+=` Previous merchant feedback on this page: ${String(rejection.reason).slice(0,500)}. Address that concern; do not repeat the rejected approach.`;
@@ -439,7 +441,6 @@ export async function propose(
     cfg,
     related.map((r) => ({ title: r.title, url:r.url })),
   );
-  if(feature==='seo'&&!sourceOnly){const quality=metadataQuality(p,proposal.after as Payload['seo'],cfg);proposal.after=quality.after;proposal.reasons.push(...quality.notes);}
   // Release 20 (RP-202): a new title must keep the brand people search for.
   if(['seo','title'].includes(feature)&&JSON.stringify(proposal.before)!==JSON.stringify(proposal.after)){
    const {productBrands,storeNames}=await import('./brand-detect');const {lostBrand}=await import('./brand-rules');
@@ -448,6 +449,20 @@ export async function propose(
    const lost=lostBrand(t(proposal.before),t(proposal.after),productBrands(p,storeNames(st)));
    if(lost.length)throw new Error(`No proposal created: the new title drops the brand ${lost.map(b=>`“${b}”`).join(', ')}, which people search for. The current title is kept.`);
   }
+  // Release 20 (RP-403): keep the store name when the merchant has rejected titles that dropped it; block malformed titles.
+  if(feature==='seo'&&JSON.stringify(proposal.before)!==JSON.stringify(proposal.after)){
+   const {learnedRules}=await import('./learned-rules.server');const lr=await import('./learned-rules');
+   const {rules,names}=await learnedRules(storeId);
+   const before=proposal.before as Payload['seo'],after={...(proposal.after as Payload['seo'])};
+   if(rules.some(r=>r.key==='keepStoreSuffix')&&lr.suffixRemoved(before,after,names)){
+    const kept=lr.restoreSuffix(before.title,after.title,names);
+    if(!kept)throw new Error(`No proposal created: you have rejected titles that removed “${names[0]}”, and the new title is too long to keep it. The current title is kept.`);
+    after.title=kept;proposal.after=after;proposal.reasons.push(`Learned rule: the store name is kept because you rejected titles that removed it (Settings › Learned from your decisions).`);
+   }
+   const problems=lr.titleProblems(after.title,p.title,names).filter(x=>!lr.titleProblems(before.title||'',p.title,names).includes(x));
+   if(problems.length)throw new Error(`No proposal created: ${problems.join('; ')}. The current title is kept.`);
+  }
+  if(feature==='seo'&&!sourceOnly){const quality=metadataQuality(p,proposal.after as Payload['seo'],cfg);proposal.after=quality.after;proposal.reasons.push(...quality.notes);}
   if(feature==='links')proposal.reasons.push(...related.map(r=>r.impact+' priority: '+r.reason));
   if (proposal.blockers.length && JSON.stringify(proposal.before) === JSON.stringify(proposal.after))
     throw new Error(proposal.blockers.join(" "));
@@ -499,7 +514,7 @@ export async function approve(storeId: string, id: string, actor: string, expect
   {const {brandGate,allowedCaps}=await import('./brand-rules');const r=await prisma.resource.findFirst({where:{id:row.resourceId,storeId},select:{facts:true,payload:true}});
    const st=await prisma.store.findUnique({where:{id:storeId},select:{settings:true,discoveries:true}});const pv=(()=>{try{return JSON.parse(r?.payload||'{}');}catch{return {};}})();
    const {productBrands,storeNames}=await import('./brand-detect');
-   const problems=brandGate(row.feature,JSON.parse(row.before),JSON.parse(row.after),JSON.parse(r?.facts||'{}'),{allow:allowedCaps(pv.vendor,pv.title,settings(st?.settings||'{}').capsAllowlist),brands:pv.title?productBrands(pv,storeNames(st)):[]});
+   const problems=brandGate(row.feature,JSON.parse(row.before),JSON.parse(row.after),JSON.parse(r?.facts||'{}'),{allow:allowedCaps(pv.vendor,pv.title,settings(st?.settings||'{}').capsAllowlist),brands:pv.title?productBrands(pv,storeNames(st)):[],productTitle:pv.title,storeNames:storeNames(st)});
    if(problems.length)throw new Error(`This change breaks the store's content rules: ${problems.join('; ')}. Edit the wording, then approve.`);}
   if (row.status !== "pending")
     throw new Error("This change is no longer awaiting approval");

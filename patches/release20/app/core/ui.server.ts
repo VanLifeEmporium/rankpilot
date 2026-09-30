@@ -150,6 +150,8 @@ export async function loadUI(request: Request) {
     // Release 20 (RP-301): findings on unpublished pages, shown under "Unpublished pages".
     unpublishedIssues: audits[0]?splitUnpublished(applyFindingState(jsonList(audits[0].issues) as Issue[],settings(store.settings)).active).unpublished:[],
     // Release 20 (RP-303): Search Console pages that are not live (404, unpublished, noindex, redirected).
+    // Release 20 (RP-403): rules learned from rejected proposals, shown in Settings with a reset.
+    learned: await import('./learned-rules.server').then(m=>m.learnedRules(store.id)).then(r=>r.rules).catch(()=>[]),
     notLivePaths: await (async()=>{const gsc=metrics.find(m=>m.provider==='gsc');if(!gsc)return [];const {storeLiveness}=await import('./page-liveness.server');const {normalisePath}=await import('./page-liveness');const live=await storeLiveness(store.id);let rows:{keys?:string[]}[]=[];try{rows=JSON.parse(gsc.payload).rows||[];}catch{/* none */}return [...new Set(rows.map(r=>r.keys?.[0]||'').filter(Boolean).filter(u=>!live(u).live).map(normalisePath))];})(),
     snoozed: audits[0]?applyFindingState(jsonList(audits[0].issues) as Issue[],settings(store.settings)).snoozed:[],
   };
@@ -282,6 +284,13 @@ export async function actionUI(request: Request) {
         const { applyBook } = await import("./brand-proposals.server");
         const r = await applyBook(store.id, value("id"), { isbn: value("isbn"), publisher: value("publisher"), editionConfirmed: value("editionConfirmed") === "on", actor });
         return data({ ok: true, message: r.message, changeId: r.changeIds[0] });
+      }
+      case "resetLearned": {
+        const cfg = settings(store.settings);
+        cfg.learnedResetAt = new Date().toISOString();
+        await prisma.store.update({ where: { id: store.id }, data: { settings: JSON.stringify(cfg) } });
+        await log(store.id, "Learned rules reset", { actor });
+        return data({ ok: true, message: "Learned rules reset. RankPilot will learn again from your next decisions." });
       }
       case "noBarcode": {
         const ids=f.getAll('ids').map(String).filter(Boolean).slice(0,500);

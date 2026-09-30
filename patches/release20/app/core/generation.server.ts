@@ -1,3 +1,4 @@
+import { uniqueWordCount } from './brand-rules';
 import {sourceDraft} from './source-drafts';
 import {metadataWarnings} from './search-copy';
 import {pageInstructions,titleBrandInstructions} from './content-policy';
@@ -59,7 +60,8 @@ export function validateCopy(source:string, before:unknown, output:z.infer<typeo
   const numbers = after.match(/\b\d+(?:[.,]\d+)?\b/g) || [];
   if (numbers.some(n => !source.includes(n))) throw new Error('Needs manual review: the proposal introduces a number absent from the source.');
   if (feature === 'seo' && !output.title.trim()) throw new Error('The preview has no title. Try preparing it again.');
-  if (feature === 'description' && text(String(before)).length > 100 && after.length < text(String(before)).length * .55)
+  // Release 20 (RP-504): repeated sentences removed from the original do not count as lost detail.
+  if (feature === 'description' && text(String(before)).length > 100 && uniqueWordCount(after) < uniqueWordCount(String(before)) * .55)
     throw new Error('Needs manual review: the replacement removes too much existing detail.');
   if (/!/.test(after)) throw new Error('Needs manual review: generated copy does not follow the brand voice.');
 }

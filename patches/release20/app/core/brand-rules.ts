@@ -1,5 +1,6 @@
 import {load} from 'cheerio';
 import type {Facts} from './types';
+import {titleProblems} from './learned-rules';
 /**
  * Release 19: one brand rule list for every writer (merchant, AI drafts, agents) and every check
  * (SEO, description, source draft, go-live). Errors block a save; warnings are shown.
@@ -9,7 +10,7 @@ const SALES=['hot sale','best quality','brand new','pimp','buy now','stocks last
 // Release 20 (RP-501): technical acronyms are not shouting.
 const ALLOWED_CAPS=new Set(['USB','LED','UK','BPA','XL','XXL','XXXL','UKCA','UPF','SPF','RRP','FAQ','FAQS','PVC','EVA','HDPE','LDPE','TPU','ABS','DIY','GPS','LPG','VAT','SKU','GTIN','ISBN','IP','UV','AC','DC','PDF',
  'MIMO','MPPT','PWM','HDMI','WIFI','WLAN','LTE','DAB','AGM','BMS','NFC','OLED','LCD','RGB','RGBW','IPX','UHF','VHF','CPU','SIM','GSM','RCD','RCBO','MCB','EHU','LIFEPO','LIFEPO4','NATO','ANSI','NASA','ECO','HEPA','PTFE','PFAS','PFOA','BBQ','CCTV','DVR','USBC','QI','APP','PIR','ASAP','SOS','IPA','VHB','EPDM','UPVC','PET','RPET','OEKO','FSC','GOTS','EVA','TPE','NBR','PU','PE','PP','LED','SMD','COB','CRI','AAA','AA','ANC','TWS','USB-C','ATV','UTV','RV','SUV','VW','MPV','ISOFIX','AUX','OBD','CAN','ECU','DAB+']);
-export type RuleOptions={allow?:Iterable<string>;brands?:string[]};
+export type RuleOptions={allow?:Iterable<string>;brands?:string[];productTitle?:string;storeNames?:string[]};
 /** Words allowed in capitals for one product: its vendor and title words, plus the merchant's allowlist. */
 export function allowedCaps(...sources:(string|string[]|undefined)[]){const out=new Set<string>();for(const src of sources)for(const w of [src||''].flat().join(' ').split(/[^A-Za-z0-9+-]+/))if(w)out.add(w.toUpperCase());return out;}
 const US_SPELLINGS:[RegExp,string][]=[[/\bcolou?r(s|ed|ful)?\b/gi,'colour'],[/\borganiz(e|es|ed|ing|er|ers|ation)\b/gi,'organise'],[/\bgray\b/gi,'grey'],[/\baluminum\b/gi,'aluminium'],[/\bcenter(s|ed)?\b/gi,'centre'],[/\bfavorite(s)?\b/gi,'favourite']];
@@ -56,10 +57,20 @@ export function unverifiedClaims(value:string,facts:Facts={},before=''):string[]
  if(/\b(?:amazon\.[a-z.]+|amzn\.to|ebay\.[a-z.]+|aliexpress\.[a-z]+|temu\.com)\b/i.test(html)&&!/\b(?:amazon|amzn|ebay|aliexpress|temu)\./i.test(before||''))out.push('Marketplace link');
  return [...new Set(out)];
 }
-/** A rewrite that removes more than 40% of the words loses information. */
+/**
+ * A rewrite that removes more than 40% of the words loses information.
+ * Release 20 (RP-504): words are counted over unique sentences, so removing repeated paragraphs or
+ * bullets is not a cut.
+ */
+export function uniqueWordCount(value:string){
+ const blocks=plain(/<[a-z][\s\S]*>/i.test(value||'')?(value||'').replace(/<\/(?:p|li|h[1-6]|div|td|th|dt|dd|tr|blockquote)>|<br\s*\/?>/gi,'$&\n'):value||'');
+ const seen=new Set<string>();let n=0;
+ for(const s of blocks.split(/\n+|(?<=[.!?])\s+/)){const words=s.trim().split(/\s+/).filter(Boolean);const key=words.join(' ').toLowerCase().replace(/[^\p{L}\p{N} ]/gu,'');if(!key||seen.has(key))continue;seen.add(key);n+=words.length;}
+ return n;
+}
 export function wordCut(before:string,after:string){
- const n=(s:string)=>plain(s).split(/\s+/).filter(Boolean).length;const b=n(before),a=n(after);
- return b>=40&&a<b*0.6?`Word count cut by ${Math.round(100*(1-a/b))}% (${b} to ${a}); keep the useful detail`:null;
+ const b=uniqueWordCount(before),a=uniqueWordCount(after);
+ return b>=40&&a<b*0.6?`Word count cut by ${Math.round(100*(1-a/b))}% (${b} to ${a} words, repeats not counted); keep the useful detail`:null;
 }
 /** Rule hits in the new value that the previous value did not already have (legacy text is flagged elsewhere). */
 export function newRuleErrors(before:string,after:string,opts:RuleOptions={}){
@@ -88,5 +99,7 @@ export function brandGate(feature:string,before:unknown,after:unknown,facts:Fact
  problems.push(...unverifiedClaims(a,facts,b));
  if(feature==='description'){const cut=wordCut(b,a);if(cut)problems.push(cut);}
  if(['seo','title'].includes(feature)){const lost=lostBrand(titleText(feature,before),titleText(feature,after),opts.brands);if(lost.length)problems.push(`The new title drops the brand ${lost.map(b=>`“${b}”`).join(', ')}, which people search for; keep it`);}
+ // Release 20 (RP-403): malformed SEO titles (no separator before the store name, product name altered); only new problems count.
+ if(feature==='seo'&&opts.productTitle){const old=new Set(titleProblems(titleText(feature,before),opts.productTitle,opts.storeNames||[]));problems.push(...titleProblems(titleText(feature,after),opts.productTitle,opts.storeNames||[]).filter(x=>!old.has(x)));}
  return problems;
 }

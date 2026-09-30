@@ -27,8 +27,10 @@ import { productBrands, storeNames } from "./brand-detect";
 import { ProtectedPageError } from "./protected-pages.server";
 import { allowedCaps, brandGate, brandRuleHits, newRuleErrors, ruleErrors, ruleSummary, unverifiedClaims, wordCut } from "./brand-rules";
 
-export const RELEASE = "19";
+export const RELEASE = "20";
 export const AGENT_ACTOR = "claude-agent";
+/** Release 20 (RP-605): every write that does nothing says why, so a no-op is not read as a failure. */
+export const NO_CHANGE = "No change: value already set";
 export const AGENT_REASON =
   "agent-reviewed-v1: Written by the RankPilot agent from this page's own content at the merchant's request, checked against the page text and applied through the bulk tool. Undo is available in Results & history.";
 const COOKIE = "rankpilot_agent";
@@ -362,9 +364,9 @@ export async function bulkSeo(storeId: string, input: unknown) {
       const after = { title: item.title, description: item.description };
       const warnings = seoWarnings(after.title, after.description, shopName);
       // Release 19: brand rules and unverified claims make an SEO item invalid, including in a dry run.
-      const blocked = brandGate("seo", before, after, JSON.parse(r.facts || "{}"), { allow: allowedCaps(live.vendor, live.title, settings(store.settings).capsAllowlist), brands: productBrands(live, storeNames(store)) });
+      const blocked = brandGate("seo", before, after, JSON.parse(r.facts || "{}"), { allow: allowedCaps(live.vendor, live.title, settings(store.settings).capsAllowlist), brands: productBrands(live, storeNames(store)), productTitle: live.title, storeNames: storeNames(store) });
       if (blocked.length) { results.push({ resourceId, ok: false, status: "invalid", message: blocked.join("; "), warnings }); continue; }
-      if (before.title.trim() === after.title && before.description.trim() === after.description) { results.push({ resourceId, ok: true, status: "unchanged", message: "Already saved" }); continue; }
+      if (before.title.trim() === after.title && before.description.trim() === after.description) { results.push({ resourceId, ok: true, status: "unchanged", message: NO_CHANGE }); continue; }
       if (await isBusy(storeId, r.id)) { results.push({ resourceId, ok: false, status: "busy", message: "Another update is applying to this page" }); continue; }
       if (body.dryRun) { results.push({ resourceId, ok: true, status: "valid", warnings, message: `${before.title || "(no Google title)"} → ${after.title}` }); continue; }
       await prisma.resource.update({ where: { id: r.id }, data: { payload: JSON.stringify(live) } });
@@ -558,7 +560,7 @@ export async function bulkHeadings(storeId: string, input: unknown) {
       const live: Payload = client ? await fetchResource(client, r.remoteId, r.kind) : JSON.parse(r.payload);
       const fixed = fixHeadingOrder(live.descriptionHtml);
       if ("skipped" in fixed && fixed.skipped) { results.push({ resourceId: id, title: r.title, ok: false, status: "skipped", message: fixed.skipped }); continue; }
-      if (!fixed.changes.length) { results.push({ resourceId: id, title: r.title, ok: true, status: "unchanged" }); continue; }
+      if (!fixed.changes.length) { results.push({ resourceId: id, title: r.title, ok: true, status: "unchanged", message: "No change: heading levels are already in order" }); continue; }
       if (text(fixed.html) !== text(live.descriptionHtml)) throw new Error("Heading repair would change visible text; skipped.");
       if (await isBusy(storeId, r.id)) { results.push({ resourceId: id, title: r.title, ok: false, status: "busy", message: "Another update is applying to this page" }); continue; }
       if (body.dryRun) { results.push({ resourceId: id, title: r.title, ok: true, status: "valid", changes: fixed.changes }); continue; }
@@ -651,7 +653,7 @@ export async function bulkDescription(storeId: string, input: unknown) {
       const live: Payload = client ? await fetchResource(client, r.remoteId, r.kind) : JSON.parse(r.payload);
       const { errors, warnings, words } = descriptionProblems(parsed.data.html, { before: live.descriptionHtml, facts: JSON.parse(r.facts || "{}"), kind: r.kind, allow: allowedCaps(live.vendor, live.title, capsAllowlist) });
       if (errors.length) { results.push({ resourceId, title: r.title, ok: false, status: "invalid", message: errors.join(" "), warnings }); continue; }
-      if (text(live.descriptionHtml) === text(parsed.data.html) && live.descriptionHtml.trim() === parsed.data.html) { results.push({ resourceId, title: r.title, ok: true, status: "unchanged", message: "Already saved" }); continue; }
+      if (text(live.descriptionHtml) === text(parsed.data.html) && live.descriptionHtml.trim() === parsed.data.html) { results.push({ resourceId, title: r.title, ok: true, status: "unchanged", message: NO_CHANGE }); continue; }
       if (await isBusy(storeId, r.id)) { results.push({ resourceId, title: r.title, ok: false, status: "busy", message: "Another update is applying to this page" }); continue; }
       const summary = `word count ${text(live.descriptionHtml).split(/\s+/).filter(Boolean).length} to ${words}`;
       if (body.dryRun) { results.push({ resourceId, title: r.title, ok: true, status: "valid", warnings, message: summary }); continue; }
@@ -825,9 +827,9 @@ export async function cleanFormatting(storeId: string, input: unknown) {
     try {
       const r = await prisma.resource.findFirstOrThrow({ where: { id: resourceId, storeId } });
       const preview = cleanSupplierHtml(JSON.parse(r.payload).descriptionHtml || "");
-      if (body.dryRun) { results.push({ resourceId, ok: preview.sameText, status: preview.removed.length ? (preview.sameText ? "valid" : "invalid") : "unchanged", removed: preview.removed, message: preview.sameText ? undefined : "Clean-up would change visible text" }); continue; }
+      if (body.dryRun) { results.push({ resourceId, ok: preview.sameText, status: preview.removed.length ? (preview.sameText ? "valid" : "invalid") : "unchanged", removed: preview.removed, message: !preview.removed.length ? "No change: no supplier formatting to remove" : preview.sameText ? undefined : "Clean-up would change visible text" }); continue; }
       const { change, message } = await proposeCleanFormatting(storeId, resourceId);
-      if (!change) { results.push({ resourceId, ok: true, status: "unchanged", message }); continue; }
+      if (!change) { results.push({ resourceId, ok: true, status: "unchanged", message: /^No change/.test(message || "") ? message : `No change: ${message || "nothing to clean"}` }); continue; }
       if (!body.apply) { results.push({ resourceId, ok: true, status: "pending", changeId: change.id, removed: preview.removed }); continue; }
       await approve(storeId, change.id, AGENT_ACTOR);
       created.push(change.id);
@@ -857,7 +859,7 @@ export async function undoChanges(storeId: string, input: unknown) {
   const results: { id: string; ok: boolean; status: string; message?: string }[] = [];
   for (const id of body.ids) {
     const c = await prisma.change.findFirst({ where: { id, storeId } });
-    if (!c) { results.push({ id, ok: false, status: "not_found" }); continue; }
+    if (!c) { results.push({ id, ok: false, status: "not_found", message: "No change: this change id was not found for this store" }); continue; }
     if (c.status !== "applied") { results.push({ id, ok: false, status: c.status, message: "Only an applied change can be undone" }); continue; }
     await enqueue(storeId, "rollback", { changeId: c.id }, c.id);
     results.push({ id, ok: true, status: "queued", message: "Undo queued; check GET changes?ids= for rolled_back or rollback_failed" });
@@ -909,7 +911,7 @@ export async function confirmFacts(storeId: string, input: unknown) {
   const { confirmAllSpecs } = await import("./spec-review.server");
   const results: { resourceId: string; ok: boolean; confirmed?: number; message?: string }[] = [];
   for (const i of body.items) {
-    try { results.push({ resourceId: i.resourceId, ok: true, confirmed: await confirmAllSpecs(storeId, i.resourceId, i.keys) }); }
+    try { const confirmed = await confirmAllSpecs(storeId, i.resourceId, i.keys); results.push({ resourceId: i.resourceId, ok: true, confirmed, ...(confirmed ? {} : { status: "unchanged", message: "No change: no unconfirmed facts to confirm" }) }); }
     catch (e) { results.push({ resourceId: i.resourceId, ok: false, message: friendlyError(e) }); }
   }
   await refreshCatalogueAudit(storeId);
@@ -928,6 +930,7 @@ export async function bulkFaq(storeId: string, input: unknown) {
       const p: Payload = JSON.parse(r.payload);
       const problems = brandGate("faq", p.faqs || [], item.faqs, JSON.parse(r.facts || "{}"), { allow: allowedCaps(p.vendor, p.title) });
       if (problems.length) { results.push({ resourceId: r.id, title: r.title, ok: false, status: "invalid", message: problems.join("; ") }); continue; }
+      if (JSON.stringify(p.faqs || []) === JSON.stringify(item.faqs)) { results.push({ resourceId: r.id, title: r.title, ok: true, status: "unchanged", message: NO_CHANGE }); continue; }
       if (body.dryRun) { results.push({ resourceId: r.id, title: r.title, ok: true, status: "valid", message: `${(p.faqs || []).length} → ${item.faqs.length} questions` }); continue; }
       const row = await stageChange(storeId, r.id, "faq", p.faqs || [], item.faqs, [AGENT_REASON]);
       if (body.apply) { await approve(storeId, row.id, AGENT_ACTOR); created.push(row.id); }
@@ -951,7 +954,8 @@ export async function bulkProduct(storeId: string, input: unknown) {
       const r = await prisma.resource.findFirstOrThrow({ where: { id: item.resourceId, storeId, kind: "product" } });
       const p: Payload = JSON.parse(r.payload);
       for (const [field, value, before] of [["title", item.title, p.title], ["vendor", item.vendor, p.vendor || ""]] as const) {
-        if (!value || value === before) continue;
+        if (!value) continue;
+        if (value === before) { results.push({ resourceId: r.id, title: r.title, field, ok: true, status: "unchanged", message: NO_CHANGE }); continue; }
         const problems = field === "title" ? brandGate("title", before, value, {}, { allow: allowedCaps(p.vendor, p.title, value), brands: productBrands(p, storeNames(await prisma.store.findUnique({ where: { id: storeId }, select: { settings: true, discoveries: true } }))) }) : /^(n\/?a|none|unbranded|un-branded)$/i.test(value) ? ["Use the real brand, not a placeholder"] : [];
         if (problems.length) { results.push({ resourceId: r.id, title: r.title, field, ok: false, status: "invalid", message: problems.join("; ") }); continue; }
         if (body.dryRun) { results.push({ resourceId: r.id, title: r.title, field, ok: true, status: "valid", message: `${before || "(blank)"} → ${value}` }); continue; }
