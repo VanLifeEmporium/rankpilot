@@ -24,7 +24,7 @@ import { dismissChanges, settleStaleChanges } from "./history-hygiene.server";
 import { applyFindingState } from "./finding-state";
 import { friendlyError } from "./db-errors";
 import { ProtectedPageError } from "./protected-pages.server";
-import { brandGate, brandRuleHits, newRuleErrors, ruleErrors, ruleSummary, unverifiedClaims, wordCut } from "./brand-rules";
+import { allowedCaps, brandGate, brandRuleHits, newRuleErrors, ruleErrors, ruleSummary, unverifiedClaims, wordCut } from "./brand-rules";
 
 export const RELEASE = "19";
 export const AGENT_ACTOR = "claude-agent";
@@ -190,6 +190,8 @@ export async function findings(storeId: string, group?: string) {
         severity: i.severity,
         detail: i.detail,
         link: i.link,
+        // Release 20 (RP-604): the change behind a changed-outside finding, for POST keep-shopify.
+        ...(i.changeId ? { changeId: i.changeId } : {}),
       })),
     }));
 }
@@ -234,20 +236,27 @@ export async function pages(storeId: string, opts: { ids?: string[]; kind?: stri
   return { total, offset, limit, hasMore: offset + items.length < total, items };
 }
 
-export async function changes(storeId: string, opts: { status?: string; ids?: string[]; limit?: number; actor?: string }) {
-  const rows = await prisma.change.findMany({
-    where: {
-      storeId,
-      // Release 19: "verified" is an alias for applied (saved and read back from Shopify).
-      ...(opts.status ? { status: { in: opts.status.split(",").map((x) => (x === "verified" ? "applied" : x)) } } : {}),
-      ...(opts.ids?.length ? { id: { in: opts.ids } } : {}),
-      ...(opts.actor ? { approvedBy: opts.actor } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take: Math.min(opts.limit || 100, 500),
-  });
+/**
+ * Release 20 (RP-604): filter by resourceId and page with offset. When resourceId or offset is given the
+ * response is {total, offset, limit, hasMore, items}; otherwise it stays a plain list (the latest 100, up to 500).
+ */
+export async function changes(storeId: string, opts: { status?: string; ids?: string[]; resourceIds?: string[]; limit?: number; offset?: number; actor?: string }) {
+  const where = {
+    storeId,
+    // Release 19: "verified" is an alias for applied (saved and read back from Shopify).
+    ...(opts.status ? { status: { in: opts.status.split(",").map((x) => (x === "verified" ? "applied" : x)) } } : {}),
+    ...(opts.ids?.length ? { id: { in: opts.ids } } : {}),
+    ...(opts.resourceIds?.length ? { resourceId: { in: opts.resourceIds } } : {}),
+    ...(opts.actor ? { approvedBy: opts.actor } : {}),
+  };
+  const paged = !!opts.resourceIds?.length || opts.offset !== undefined;
+  const offset = Math.max(0, opts.offset || 0), limit = Math.max(1, Math.min(opts.limit || 100, 500));
+  const [total, rows] = await Promise.all([
+    paged ? prisma.change.count({ where }) : Promise.resolve(0),
+    prisma.change.findMany({ where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: offset, take: limit }),
+  ]);
   const titles = new Map((await prisma.resource.findMany({ where: { storeId, id: { in: rows.map((r) => r.resourceId) } }, select: { id: true, title: true } })).map((r) => [r.id, r.title]));
-  return rows.map((c) => ({
+  const items = rows.map((c) => ({
     id: c.id,
     resourceId: c.resourceId,
     page: titles.get(c.resourceId),
@@ -261,6 +270,7 @@ export async function changes(storeId: string, opts: { status?: string; ids?: st
     createdAt: c.createdAt,
     appliedAt: c.appliedAt,
   }));
+  return paged ? { total, offset, limit, hasMore: offset + items.length < total, items } : items;
 }
 
 export const seoItem = z.object({
@@ -351,7 +361,7 @@ export async function bulkSeo(storeId: string, input: unknown) {
       const after = { title: item.title, description: item.description };
       const warnings = seoWarnings(after.title, after.description, shopName);
       // Release 19: brand rules and unverified claims make an SEO item invalid, including in a dry run.
-      const blocked = brandGate("seo", before, after, JSON.parse(r.facts || "{}"));
+      const blocked = brandGate("seo", before, after, JSON.parse(r.facts || "{}"), { allow: allowedCaps(live.vendor, live.title, settings(store.settings).capsAllowlist) });
       if (blocked.length) { results.push({ resourceId, ok: false, status: "invalid", message: blocked.join("; "), warnings }); continue; }
       if (before.title.trim() === after.title && before.description.trim() === after.description) { results.push({ resourceId, ok: true, status: "unchanged", message: "Already saved" }); continue; }
       if (await isBusy(storeId, r.id)) { results.push({ resourceId, ok: false, status: "busy", message: "Another update is applying to this page" }); continue; }
@@ -594,12 +604,12 @@ function htmlOutsideAllowed(html: string, existing: { tags: Set<string>; attrs: 
   return [...bad];
 }
 export const descriptionItem = z.object({ resourceId: z.string().min(1), html: z.string().trim().min(1).max(60000) });
-export function descriptionProblems(html: string, context: { before?: string; facts?: Facts; kind?: string } = {}) {
+export function descriptionProblems(html: string, context: { before?: string; facts?: Facts; kind?: string; allow?: Iterable<string> } = {}) {
   const errors: string[] = [];
   const warnings: string[] = [];
   // Release 19: the shared brand rules and unverified-claim checks are errors, not warnings.
   const before = context.before || "";
-  const ruleHits = newRuleErrors(before, html);
+  const ruleHits = newRuleErrors(before, html, { allow: context.allow });
   if (ruleHits.length) errors.push(`Breaks the brand rules: ${ruleSummary(ruleHits)}.`);
   errors.push(...unverifiedClaims(html, context.facts || {}, before));
   const cut = wordCut(before, html);
@@ -625,6 +635,7 @@ export function descriptionProblems(html: string, context: { before?: string; fa
 export async function bulkDescription(storeId: string, input: unknown) {
   const body = z.object({ items: z.array(z.unknown()).min(1).max(10), dryRun: z.boolean().default(true), apply: z.boolean().default(false) }).parse(input);
   const client = await clientFor(storeId);
+  const capsAllowlist = settings((await prisma.store.findUnique({ where: { id: storeId }, select: { settings: true } }))?.settings || "{}").capsAllowlist;
   const results: Result[] = [];
   const created: string[] = [];
   const seen = new Set<string>();
@@ -637,7 +648,7 @@ export async function bulkDescription(storeId: string, input: unknown) {
     try {
       const r = await prisma.resource.findFirstOrThrow({ where: { id: resourceId, storeId } });
       const live: Payload = client ? await fetchResource(client, r.remoteId, r.kind) : JSON.parse(r.payload);
-      const { errors, warnings, words } = descriptionProblems(parsed.data.html, { before: live.descriptionHtml, facts: JSON.parse(r.facts || "{}"), kind: r.kind });
+      const { errors, warnings, words } = descriptionProblems(parsed.data.html, { before: live.descriptionHtml, facts: JSON.parse(r.facts || "{}"), kind: r.kind, allow: allowedCaps(live.vendor, live.title, capsAllowlist) });
       if (errors.length) { results.push({ resourceId, title: r.title, ok: false, status: "invalid", message: errors.join(" "), warnings }); continue; }
       if (text(live.descriptionHtml) === text(parsed.data.html) && live.descriptionHtml.trim() === parsed.data.html) { results.push({ resourceId, title: r.title, ok: true, status: "unchanged", message: "Already saved" }); continue; }
       if (await isBusy(storeId, r.id)) { results.push({ resourceId, title: r.title, ok: false, status: "busy", message: "Another update is applying to this page" }); continue; }
@@ -722,7 +733,7 @@ export async function readiness(storeId: string, opts: { ids?: string[]; gids?: 
     if (!description) reasons.push("No Google summary");
     else if (description.length < 70 || description.length > 170) reasons.push(`Google summary is ${description.length} characters (aim for 120–160)`);
     // Release 19: the shared brand rules (supplier formatting, sales language, capitals, imperial units, "!").
-    const ruleHits = ruleErrors([p.title, p.seo?.title || "", p.seo?.description || "", p.descriptionHtml || ""].join("\n"));
+    const ruleHits = ruleErrors([p.title, p.seo?.title || "", p.seo?.description || "", p.descriptionHtml || ""].join("\n"), { allow: allowedCaps(p.vendor, p.title, settings(store.settings).capsAllowlist) });
     for (const rule of new Set(ruleHits.map((h) => h.rule))) reasons.push(rule);
     const blocking = issues.filter((i) => i.resourceId === r.id && i.severity !== "notice" && !OPTIONAL_CODES.has(i.code));
     for (const code of new Set(blocking.map((i) => i.code))) reasons.push(`Open finding: ${findingName(code)}`);
@@ -914,7 +925,7 @@ export async function bulkFaq(storeId: string, input: unknown) {
     try {
       const r = await prisma.resource.findFirstOrThrow({ where: { id: item.resourceId, storeId, kind: "product" } });
       const p: Payload = JSON.parse(r.payload);
-      const problems = brandGate("faq", p.faqs || [], item.faqs, JSON.parse(r.facts || "{}"));
+      const problems = brandGate("faq", p.faqs || [], item.faqs, JSON.parse(r.facts || "{}"), { allow: allowedCaps(p.vendor, p.title) });
       if (problems.length) { results.push({ resourceId: r.id, title: r.title, ok: false, status: "invalid", message: problems.join("; ") }); continue; }
       if (body.dryRun) { results.push({ resourceId: r.id, title: r.title, ok: true, status: "valid", message: `${(p.faqs || []).length} → ${item.faqs.length} questions` }); continue; }
       const row = await stageChange(storeId, r.id, "faq", p.faqs || [], item.faqs, [AGENT_REASON]);
@@ -940,7 +951,7 @@ export async function bulkProduct(storeId: string, input: unknown) {
       const p: Payload = JSON.parse(r.payload);
       for (const [field, value, before] of [["title", item.title, p.title], ["vendor", item.vendor, p.vendor || ""]] as const) {
         if (!value || value === before) continue;
-        const problems = field === "title" ? brandGate("title", before, value) : /^(n\/?a|none|unbranded|un-branded)$/i.test(value) ? ["Use the real brand, not a placeholder"] : [];
+        const problems = field === "title" ? brandGate("title", before, value, {}, { allow: allowedCaps(p.vendor, p.title, value) }) : /^(n\/?a|none|unbranded|un-branded)$/i.test(value) ? ["Use the real brand, not a placeholder"] : [];
         if (problems.length) { results.push({ resourceId: r.id, title: r.title, field, ok: false, status: "invalid", message: problems.join("; ") }); continue; }
         if (body.dryRun) { results.push({ resourceId: r.id, title: r.title, field, ok: true, status: "valid", message: `${before || "(blank)"} → ${value}` }); continue; }
         const row = await stageChange(storeId, r.id, field, before, value, [AGENT_REASON]);

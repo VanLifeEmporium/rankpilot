@@ -1,8 +1,8 @@
 import { specFacts } from "./spec-extract";
 import { confirmedNoBarcode } from "./finding-state";
 import { blockingMarkup } from "./html-cleanup";
-import { ruleErrors, ruleSummary } from "./brand-rules";
-import { articleFacts, nextSeason, duplicateAlts, faqQuestionTexts, normaliseQuestion, barcodeProblems, vendorProblems, vendorKey, answeredQuestions, ANSWER_QUESTIONS, type VendorContext } from "./catalogue-checks";
+import { ruleErrors, ruleSummary, allowedCaps } from "./brand-rules";
+import { mentionsDelivery, relevantQuestions, articleFacts, nextSeason, duplicateAlts, faqQuestionTexts, normaliseQuestion, barcodeProblems, vendorProblems, vendorKey, answeredQuestions, ANSWER_QUESTIONS, type VendorContext } from "./catalogue-checks";
 import {supplierSignals} from './content-policy';
 import { load } from "cheerio";
 import {
@@ -99,10 +99,11 @@ export type AuditResource = {
   keyword: string;
   facts: string;
 };
-export type AuditContext = { templateQuestions: Set<string>; vendors: VendorContext["vendors"]; storeName: string; deliveryPolicy: boolean };
+export type AuditContext = { templateQuestions: Set<string>; vendors: VendorContext["vendors"]; storeName: string; deliveryPolicy: boolean; sharedDelivery?: boolean; capsAllowlist?: string[] };
 /** Release 19: first pass over the catalogue — shared FAQ questions and vendor spellings. */
-export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boolean } = {}) {
+export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boolean; capsAllowlist?: string[] } = {}) {
   const questions = new Map<string, number>();
+  let withDelivery = 0;
   const vendors = new Map<string, Map<string, number>>();
   let products = 0;
   return {
@@ -112,6 +113,7 @@ export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boole
         products++;
         const p: Payload = JSON.parse(r.payload);
         for (const q of new Set(faqQuestionTexts(p).map((q) => normaliseQuestion(q, p.title)))) questions.set(q, (questions.get(q) || 0) + 1);
+        if (mentionsDelivery(p)) withDelivery++;
         const v = (p.vendor || "").trim();
         if (v) { const k = vendorKey(v); const m = vendors.get(k) || new Map<string, number>(); m.set(v, (m.get(v) || 0) + 1); vendors.set(k, m); }
       }
@@ -119,11 +121,12 @@ export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boole
     context(): AuditContext {
       // A question on more than 10% of products is a template, not a product-specific FAQ.
       const templateQuestions = new Set([...questions].filter(([, n]) => products >= 10 && n > products * 0.1).map(([q]) => q));
-      return { templateQuestions, vendors, storeName: opts.storeName || "", deliveryPolicy: !!opts.deliveryPolicy };
+      // A delivery line on most products is a shared, store-level answer.
+      return { templateQuestions, vendors, capsAllowlist: opts.capsAllowlist || [], storeName: opts.storeName || "", deliveryPolicy: !!opts.deliveryPolicy, sharedDelivery: products > 0 && withDelivery / products >= 0.5 };
     },
   };
 }
-export function auditCatalogue(resources: AuditResource[], opts: { storeName?: string; deliveryPolicy?: boolean } = {}) {
+export function auditCatalogue(resources: AuditResource[], opts: { storeName?: string; deliveryPolicy?: boolean; capsAllowlist?: string[] } = {}) {
   const prescan = createPrescan(opts);
   prescan.add(resources);
   const auditor = createCatalogueAuditor(prescan.context());
@@ -147,7 +150,7 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
     failed = 0;
   let factsTotal = 0,
     factsPresent = 0;
-  let products_ = 0, answeredTotal = 0;
+  let products_ = 0, answeredTotal = 0, askedTotal = 0, deliveryMissing = 0;
   const missingAnswers = new Map<string, { id: string; title: string }[]>();
   const add_ = (resources: AuditResource[]) => {
   for (const r of resources) {
@@ -232,7 +235,7 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
     // Release 18: supplier markup that blocks edits (H1, buttons, forms, unsafe links).
     {const blocking=blockingMarkup(p.descriptionHtml||'');if(blocking.length)add('supplier-markup','notice',`The description contains ${blocking.join(', ')}. RankPilot will not edit around this markup. Use "Clean supplier formatting" to remove it and keep the text.`);}
     // Release 19 (R19-22, R19-18): house style from the shared brand rules. Units are their own finding.
-    {const hits=ruleErrors(`${p.title}\n${p.seo?.title||''}\n${p.seo?.description||''}\n${p.descriptionHtml||''}`);
+    {const hits=ruleErrors(`${p.title}\n${p.seo?.title||''}\n${p.seo?.description||''}\n${p.descriptionHtml||''}`,{allow:allowedCaps(p.vendor,p.title,ctx.capsAllowlist)});
      const style=hits.filter(h=>h.rule!=='Imperial units'),units=hits.filter(h=>h.rule==='Imperial units');
      if(style.length&&['product','collection'].includes(r.kind))add('supplier-formatting','warning',`Breaks the house style: ${ruleSummary(style)}. Rewrite the wording in Shopify or with a reviewed description change.`,'description');
      if(units.length)add('imperial-units','warning',`Imperial units: ${units.map(u=>u.match).slice(0,5).join(', ')}. Give metric measurements (cm, kg, litres).`,'description');}
@@ -288,7 +291,11 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
       if (!unpublished) {
       products_++;
       const answered = answeredQuestions(p, f, { deliveryPolicy: ctx.deliveryPolicy });
-      for (const q of ANSWER_QUESTIONS) {
+      // Release 20 (RP-104): only the questions that apply to this product type; delivery is store-level.
+      const relevant = relevantQuestions(p);
+      askedTotal += relevant.length;
+      if (!answered.delivery) deliveryMissing++;
+      for (const q of relevant) {
         if (answered[q.key]) { answeredTotal++; continue; }
         const list = missingAnswers.get(q.key) || []; list.push({ id: r.id, title: r.title }); missingAnswers.set(q.key, list);
       }
@@ -305,12 +312,16 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
   };
   const result = () => {
   // Release 19: one grouped finding per missing shopper answer, with the product count.
-  const answerIssues: Issue[] = ANSWER_QUESTIONS.filter((q) => missingAnswers.get(q.key)?.length).map((q) => {
+  const answerIssues: Issue[] = ANSWER_QUESTIONS.filter((q) => q.key !== "delivery").filter((q) => missingAnswers.get(q.key)?.length).map((q) => {
     const list = missingAnswers.get(q.key)!;
     return { resourceId: `answers:${q.key}`, title: q.label, code: `answer-missing-${q.key}`, severity: "notice" as const, count: list.length, resourceIds: list.slice(0, 1000).map((x) => x.id),
       detail: `${list.length} ${list.length === 1 ? "product does" : "products do"} not answer this in the description, confirmed facts or product fields. For example: ${list.slice(0, 5).map((x) => x.title).join(", ")}.` };
   });
-  const answerReadiness = products_ ? Math.round((100 * answeredTotal) / (products_ * ANSWER_QUESTIONS.length)) : 0;
+  // Delivery: answered for the store when the delivery policy is set, or a delivery line is shared by most products.
+  const storeDelivery = ctx.deliveryPolicy || ctx.sharedDelivery || (products_ > 0 && deliveryMissing === 0);
+  if (products_ && !storeDelivery) answerIssues.push({ resourceId: "answers:delivery", title: "No delivery information", code: "answer-missing-delivery", severity: "notice", count: 1, detail: "The store has no delivery information that shoppers or AI answers can find. Add delivery times and costs once (Settings › store policies, or a shared delivery line on product pages); it then counts for every product." });
+  const asked = askedTotal + (products_ ? 1 : 0), answered_ = answeredTotal + (products_ && storeDelivery ? 1 : 0);
+  const answerReadiness = products_ && asked ? Math.round((100 * answered_) / asked) : 0;
   issues.sort(
     (a, b) =>
       ({ critical: 0, warning: 1, notice: 2 })[a.severity] -

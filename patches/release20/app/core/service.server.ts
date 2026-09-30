@@ -96,7 +96,7 @@ export async function catalogueAuditPaged(storeId:string){
  const {resourcePages,AUDIT_SELECT,CATALOGUE_KINDS}=await import('./resource-pages.server');
  // Pass 1: shared FAQ questions and vendor spellings (only short strings are kept).
  const store=await prisma.store.findUnique({where:{id:storeId}});const cfg=settings(store?.settings||'{}');
- const prescan=createPrescan({storeName:JSON.parse(store?.discoveries||'{}').shop?.name||cfg.titleBrand||'',deliveryPolicy:!!(cfg.policies?.source&&cfg.policies?.delivery)});
+ const prescan=createPrescan({storeName:JSON.parse(store?.discoveries||'{}').shop?.name||cfg.titleBrand||'',deliveryPolicy:!!(cfg.policies?.source&&cfg.policies?.delivery),capsAllowlist:cfg.capsAllowlist});
  for await(const page of resourcePages<AuditResource>({storeId,kind:'product'},{id:true,kind:true,payload:true,title:true}))prescan.add(page);
  // Pass 2: the checks.
  const auditor=createCatalogueAuditor(prescan.context());
@@ -348,6 +348,11 @@ export async function audit(storeId: string) {
   } else
     coverage.demo =
       "Sample data. Live HTML, links, schema and template performance are not assessed.";
+  // Release 20 (RP-302): pages Google still shows that return 404 or are unpublished.
+  try {
+    const { deadPagesWithImpressions } = await import("./index-hygiene.server");
+    result.issues.push(...(await deadPagesWithImpressions(storeId, store.demo ? {} : { confirm: async (url) => { const r = await publicFetch(new URL(new URL(url).pathname, store.domain).href, { method: "HEAD" }); await r.body?.cancel(); return r.status; } })));
+  } catch (e) { await log(storeId, "Search Console page check unavailable", { message: (e as Error).message }); }
   const row = await prisma.audit.create({
     data: {
       storeId,
@@ -473,8 +478,9 @@ export async function approve(storeId: string, id: string, actor: string, expect
     await assertNotProtected(storeId, row.resourceId);
   }
   // Release 19: brand rules and unverified claims apply to every writer (merchant, AI, agent).
-  {const {brandGate}=await import('./brand-rules');const r=await prisma.resource.findFirst({where:{id:row.resourceId,storeId},select:{facts:true}});
-   const problems=brandGate(row.feature,JSON.parse(row.before),JSON.parse(row.after),JSON.parse(r?.facts||'{}'));
+  {const {brandGate,allowedCaps}=await import('./brand-rules');const r=await prisma.resource.findFirst({where:{id:row.resourceId,storeId},select:{facts:true,payload:true}});
+   const st=await prisma.store.findUnique({where:{id:storeId},select:{settings:true}});const pv=(()=>{try{return JSON.parse(r?.payload||'{}');}catch{return {};}})();
+   const problems=brandGate(row.feature,JSON.parse(row.before),JSON.parse(row.after),JSON.parse(r?.facts||'{}'),{allow:allowedCaps(pv.vendor,pv.title,settings(st?.settings||'{}').capsAllowlist)});
    if(problems.length)throw new Error(`This change breaks the store's content rules: ${problems.join('; ')}. Edit the wording, then approve.`);}
   if (row.status !== "pending")
     throw new Error("This change is no longer awaiting approval");

@@ -68,6 +68,8 @@ export type Issue = {
   resourceIds?: string[];
   /** Release 20 (RP-103): side-by-side difference for changed-outside findings. */
   diff?: { rankpilot: string; shopify: string; linksRemoved: string[]; linksAdded: string[] };
+  /** Release 20 (RP-302): a suggested redirect destination. */
+  suggestion?: { path: string; title: string };
   /** Release 20 (RP-301): the page is not published on the Online Store. */
   unpublished?: boolean;
 };
@@ -84,6 +86,8 @@ export type Settings = {
   snoozes?: { resourceId: string; code: string; until: string; reason: string; at: string; title?: string }[];
   /** Release 18: change ids whose Shopify-side value the merchant chose to keep. */
   keptShopify?: Record<string, string>;
+  /** Release 20 (RP-501): words the merchant allows in capitals (brands, model names). */
+  capsAllowlist?: string[];
   weekly: boolean;
   requeue: boolean;
   gscSite: string;

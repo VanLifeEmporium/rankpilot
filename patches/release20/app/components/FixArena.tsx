@@ -37,12 +37,13 @@ export function FindingFix({issue,relatedIssues=[],d,busy,message,feedback,onGen
  const pages=(d.discoveries.pages||[]) as {url:string;status:number}[];
  const schemas=(d.discoveries.schemas||[]) as {url:string}[];
  const targets=linkTargets(path,d.resources,pages.length?pages.filter(p=>p.status>=200&&p.status<300).map(p=>p.url):schemas.map(s=>s.url),d.domain);
- const [target,setTarget]=useState(diagnosis.external?'':targets.find(t=>t.similarity>0)?.path||'/');
+ const [target,setTarget]=useState(issue.suggestion?.path||(diagnosis.external?'':targets.find(t=>t.similarity>0)?.path||(issue.code==='404-with-impressions'?'':'/')));
  const [mode,setMode]=useState(diagnosis.existing?'restore':diagnosis.external?'replace':'redirect');
  const shared=relatedIssues.filter(i=>i.code==='broken-link'&&linkDiagnosis(i,d.domain,d.resources).address===path);
  const existing=diagnosis.existing;
  const editor=existing && existing.remoteId && !d.demo && /\.myshopify\.com$/.test(d.shop) && /^gid:\/\/shopify\/\w+\/\d+$/.test(existing.remoteId)?`https://${d.shop}/admin/${existing.kind==='article'?`blogs/${JSON.parse(existing.payload).blogId?.split('/').pop()}/articles`:existing.kind+'s'}/${existing.remoteId.split('/').pop()}`:null;
- const redirect=['reported-404','404','broken-link'].includes(issue.code);
+ // Release 20 (RP-302): Search Console pages that no longer open use the same redirect flow.
+ const redirect=['reported-404','404','broken-link','404-with-impressions','unpublished-with-impressions'].includes(issue.code);
  return <>
   <div className="review-body finding-review">
    <p className="badge">{findingName(issue.code)}</p>

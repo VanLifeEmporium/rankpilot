@@ -598,6 +598,7 @@ export async function actionUI(request: Request) {
         cfg.titleBrand=z.string().max(60).parse(value('titleBrand').trim());
         if(cfg.titleBrandMode==='append' && !cfg.titleBrand)throw new Error('Enter the store brand to append.');
         cfg.brandVoice=z.string().max(1500).parse(value("brandVoice"));
+        if(f.has("capsAllowlist"))cfg.capsAllowlist=[...new Set(value("capsAllowlist").split(/[,\n]/).map(w=>w.trim().toUpperCase()).filter(w=>/^[A-Z0-9-]{2,30}$/.test(w)))].slice(0,200);
         cfg.weekly = f.get("weekly") === "on";
         cfg.requeue = f.get("requeue") === "on";
         cfg.gscSite = z.string().max(300).parse(value("gscSite"));
