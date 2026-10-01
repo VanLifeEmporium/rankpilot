@@ -869,7 +869,7 @@ export default function Workspace() {
                 <Metric
                   label="Answer readiness"
                   value={(()=>{const v=audit?JSON.parse(audit.coverage||'{}').answerReadiness:undefined;return typeof v==='number'?`${v}%`:'—';})()}
-                  caption="Share of 7 shopper questions each product page answers"
+                  caption="Share of the shopper questions that apply to each product, answered on its page"
                 />
                 <Metric
                   label="How often AI mentions your shop"

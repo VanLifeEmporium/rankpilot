@@ -50,12 +50,13 @@ GET  /api/agent/opportunities?limit=25        live, published, indexable pages a
 GET  /api/agent/readiness?gids=gid://shopify/Product/1&amp;refresh=1   go-live check (max 50), includes brand rules
 GET  /api/agent/spec-coverage                 products with no readable specification
 GET  /api/agent/supplier-copy
-GET  /api/agent/book?resourceId=a            publisher and ISBN suggestions for a book (description, then Open Library); saved as unconfirmed facts
+GET  /api/agent/book?resourceId=a            publisher and ISBN suggestions for a book (description, then Open Library); saved as unconfirmed facts. Open Library candidates must match the title and be from 1980 or later; each has author and cover. Up to 5, or "No confident match" when none fit
 POST /api/agent/seo            {"items":[{"resourceId","title","description"}], "dryRun", "apply"}   max 25
 POST /api/agent/description    {"items":[{"resourceId","html"}], "dryRun", "apply"}   max 10; articles and pages keep their own layout markup
 POST /api/agent/faq            {"items":[{"resourceId","faqs":[{"question","answer"}]}], "dryRun", "apply"}   max 5
 POST /api/agent/product        {"items":[{"resourceId","title"?,"vendor"?}], "dryRun", "apply"}   max 10; a new title must keep the brand
 POST /api/agent/brands         {"ids"?:[...], "minConfidence"?:"high"}   pending vendor changes from brand-is-store findings, with evidence and smart-collection warnings; a product with a proposal already waiting returns status "exists" (never a duplicate). Medium confidence = possible brand to check
+POST /api/agent/confirm-brand  {"brand":"Polarbox"}                  confirm a brand once: it is remembered (matched like a listed brand from the next audit) and every product that names it but lists the store or no brand as vendor gets a pending vendor change, with smart-collection warnings. Returns {brand, results}
 POST /api/agent/book           {"resourceId","isbn","publisher","editionConfirmed":true}   pending vendor (publisher) and barcode (ISBN) changes
 POST /api/agent/headings       {"ids":[...], "dryRun", "apply"}   max 25
 POST /api/agent/clean-formatting {"ids":[...], "dryRun", "apply"}   max 20
@@ -70,7 +71,7 @@ POST /api/agent/snooze         {"items":[{"resourceId","code","until":"2027-06-0
 POST /api/agent/confirm-facts  {"items":[{"resourceId","keys":["weight",...]}]}   after checking the values
 POST /api/agent/dismiss        {"stale":true} or {"ids":[...], "reason"}
 POST /api/agent/recheck-pages  {"limit":20}   queued; read the result from GET jobs
-POST /api/agent/job            {"kind":"audit"|"indexation"|"refresh-audit"|"generate-alt"|"recheck-pages"|"crux","ids":[...]}
+POST /api/agent/job            {"kind":"audit"|"indexation"|"refresh-audit"|"generate-alt"|"recheck-pages"|"crux","ids":[...]} generate-alt checks every image's alt (empty, duplicate, keyword-stuffed, capitals, generic) and never names a scene the image does not show
 POST /api/agent/verify         {"id":"changeId"}
 POST /api/agent/supplier-originals {"items":[{"handle","text","source"}]}
 Pages with an open changed-outside finding are protected: every write returns status "protected" until it is resolved.

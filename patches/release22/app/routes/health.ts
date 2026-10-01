@@ -1,7 +1,7 @@
 import {workerHealthy} from '../core/worker-health.server';
 import {recordMemory,readMemory,memoryLimitMb,memoryWarning} from '../core/memory.server';
 import prisma, { databaseReady } from "../db.server";
-export const RELEASE_TAG = "2026-10-01-release-22-s2";
+export const RELEASE_TAG = "2026-10-01-release-22-s3";
 export const loader = async ({request}: {request:Request}) => {
   const headers = { "Cache-Control": "no-store", "X-RankPilot-Release": RELEASE_TAG, "Content-Type": "application/json" };
   try {

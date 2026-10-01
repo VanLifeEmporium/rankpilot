@@ -2,7 +2,8 @@ import prisma from '../db.server';
 import {settings} from './types';
 import type {Facts,Issue,Payload} from './types';
 import {applyFindingState} from './finding-state';
-import {vendorRuleCollections} from './brand-detect';
+import {detectBrand,vendorRuleCollections} from './brand-detect';
+import {vendorKey} from './catalogue-checks';
 import {bookFromPage,bookQuery,openLibraryCandidates,validIsbn13,type BookCandidate} from './book-flow';
 import {log} from './service.server';
 import {friendlyError} from './db-errors';
@@ -33,15 +34,58 @@ export async function proposeBrands(storeId:string,opts:{ids?:string[];minConfid
    // Release 22 (R22-402): one proposal per product; a pending one is reported, never duplicated.
    const pending=await prisma.change.findFirst({where:{storeId,resourceId:r.id,feature:'vendor',status:{in:['pending','approved','applying','verifying']}},orderBy:{createdAt:'desc'}});
    if(pending){results.push({resourceId:r.id,title:r.title,ok:true,status:'exists',vendor:String(JSON.parse(pending.after)),changeId:pending.id,message:'Proposal pending'});continue;}
-   const affected=vendorRuleCollections(smart,p.collections||[]);
-   const warnings=affected.length?[`Smart ${affected.length===1?'collection':'collections'} ${affected.map(t=>`“${t}”`).join(', ')} ${affected.length===1?'uses':'use'} the vendor in ${affected.length===1?'its':'their'} rules; this product may leave or join ${affected.length===1?'it':'them'}.`]:[];
-   const ev=b.evidence.map(e=>`${e.where}: “${e.text.slice(0,120)}”`).join('; ');
-   const row=await stageChange(storeId,r.id,'vendor',p.vendor||'',b.vendor,[`Brand found in the ${ev} (${b.confidence} confidence).`,'Vendor is the brand Google Shopping shows. Waits for your approval.',...warnings.map(w=>'Warning: '+w)]);
-   results.push({resourceId:r.id,title:r.title,ok:true,status:'pending',vendor:b.vendor,changeId:row.id,...(warnings.length?{warnings}:{})});
+   results.push(await stageVendor(storeId,r.id,r.title,p,b,smart,stageChange));
   }catch(e){results.push({resourceId:i.resourceId,title:i.title,ok:false,status:e instanceof ProtectedPageError?'protected':'error',message:friendlyError(e)});}
  }
  await log(storeId,'Brand proposals prepared',{count:results.filter(r=>r.status==='pending').length,actor:opts.actor});
  return {results};
+}
+
+type Smart={title:string;rules?:{column:string;condition:string}[]}[];
+async function stageVendor(storeId:string,id:string,title:string,p:Payload,b:{vendor:string;confidence:string;evidence:{where:string;text:string}[]},smart:Smart,stageChange:typeof import('./agent.server').stageChange,confirmed=false):Promise<BrandResult>{
+ const affected=vendorRuleCollections(smart,p.collections||[]);
+ const warnings=affected.length?[`Smart ${affected.length===1?'collection':'collections'} ${affected.map(t=>`“${t}”`).join(', ')} ${affected.length===1?'uses':'use'} the vendor in ${affected.length===1?'its':'their'} rules; this product may leave or join ${affected.length===1?'it':'them'}.`]:[];
+ const ev=b.evidence.map(e=>`${e.where}: “${e.text.slice(0,120)}”`).join('; ');
+ const row=await stageChange(storeId,id,'vendor',p.vendor||'',b.vendor,[confirmed?`You confirmed “${b.vendor}” as a brand. Found in the ${ev}.`:`Brand found in the ${ev} (${b.confidence} confidence).`,'Vendor is the brand Google Shopping shows. Waits for your approval.',...warnings.map(w=>'Warning: '+w)]);
+ return {resourceId:id,title,ok:true,status:row.status==='pending'?'pending':row.status,vendor:b.vendor,changeId:row.id,...(warnings.length?{warnings}:{})};
+}
+
+/**
+ * Release 22 (R22-403): confirm a brand once. The brand is remembered (matched like a listed brand from
+ * the next audit), and every product that names it but lists the store, or no brand, as its vendor gets a
+ * pending vendor change, with smart-collection warnings shown before approval.
+ */
+export async function confirmBrand(storeId:string,input:{brand:string;actor?:string}):Promise<{brand:string;results:BrandResult[]}>{
+ const brand=input.brand.replace(/\s+/g,' ').trim();
+ if(brand.length<2||brand.length>60)throw new Error('Enter the brand name, 2 to 60 characters.');
+ const {stageChange}=await import('./agent.server');
+ const store=await prisma.store.findUniqueOrThrow({where:{id:storeId},select:{settings:true,discoveries:true}});
+ const cfg=settings(store.settings||'{}');
+ const confirmedBrands=[...(cfg.confirmedBrands||[]).filter(b=>vendorKey(b)!==vendorKey(brand)),brand];
+ await prisma.store.update({where:{id:storeId},data:{settings:JSON.stringify({...JSON.parse(store.settings||'{}'),confirmedBrands})}});
+ const storeName=(()=>{try{return JSON.parse(store.discoveries||'{}').shop?.name||'';}catch{return '';}})()||cfg.titleBrand||'';
+ const storeKeys=new Set([storeName,cfg.titleBrand||''].map(vendorKey).filter(Boolean));
+ const [products,collections]=await Promise.all([
+  prisma.resource.findMany({where:{storeId,kind:'product'},select:{id:true,title:true,payload:true}}),
+  prisma.resource.findMany({where:{storeId,kind:'collection'},select:{title:true,payload:true}}),
+ ]);
+ const smart=collections.map(c=>{try{return {title:c.title,rules:(JSON.parse(c.payload) as Payload).rules};}catch{return {title:c.title};}}).filter(c=>c.rules?.length);
+ const results:BrandResult[]=[];
+ for(const r of products){
+  let p:Payload;try{p=JSON.parse(r.payload);}catch{continue;}
+  const vendor=vendorKey(p.vendor||'');
+  if(vendor===vendorKey(brand)||(vendor&&!storeKeys.has(vendor)&&!/^(na|none|unbranded|nobrand|generic|default)$/.test(vendor)))continue;
+  const found=detectBrand(p,[brand]);
+  if(!found||vendorKey(found.vendor)!==vendorKey(brand))continue;
+  try{
+   const pending=await prisma.change.findFirst({where:{storeId,resourceId:r.id,feature:'vendor',status:{in:['pending','approved','applying','verifying']}},orderBy:{createdAt:'desc'}});
+   // A different pending proposal is superseded by stageChange; one already being applied is left alone.
+   if(pending&&(vendorKey(String(JSON.parse(pending.after)))===vendorKey(brand)||pending.status!=='pending')){results.push({resourceId:r.id,title:r.title,ok:true,status:'exists',vendor:String(JSON.parse(pending.after)),changeId:pending.id,message:'Proposal pending'});continue;}
+   results.push(await stageVendor(storeId,r.id,r.title,p,{...found,vendor:brand},smart,stageChange,true));
+  }catch(e){results.push({resourceId:r.id,title:r.title,ok:false,status:e instanceof ProtectedPageError?'protected':'error',message:friendlyError(e)});}
+ }
+ await log(storeId,'Brand confirmed',{brand,count:results.filter(r=>r.status==='pending').length,actor:input.actor});
+ return {brand,results};
 }
 
 /** Release 20 (RP-203): candidates for a book, from its own page first, then Open Library. */
@@ -50,8 +94,8 @@ export async function bookCandidates(p:Payload,fetcher:((url:string)=>Promise<un
  if(fetcher){
   try{
    const q=own?`isbn:${own.isbn}`:`title:${bookQuery(p.title)}`;
-   const json=await fetcher(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&fields=title,publisher,isbn,first_publish_year,editions,editions.title,editions.publisher,editions.isbn,editions.publish_date&limit=3`) as {docs?:never[]};
-   for(const c of openLibraryCandidates(json||{}))if(!out.some(o=>o.isbn===c.isbn))out.push(c);
+   const json=await fetcher(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&fields=title,author_name,publisher,isbn,first_publish_year,editions,editions.title,editions.publisher,editions.isbn,editions.publish_date&limit=5`) as {docs?:never[]};
+   for(const c of openLibraryCandidates(json||{},own?'':bookQuery(p.title)))if(!out.some(o=>o.isbn===c.isbn))out.push(c);
    if(own&&!own.publisher){const match=out.find(c=>c.isbn===own.isbn&&c.publisher);if(match)own.publisher=match.publisher;}
   }catch{/* offline: page candidates only */}
  }
@@ -64,9 +108,9 @@ export async function suggestBook(storeId:string,resourceId:string,fetcher:((url
  const store=await prisma.store.findUnique({where:{id:storeId},select:{demo:true}});
  const p:Payload=JSON.parse(r.payload);
  const list=await bookCandidates(p,store?.demo&&fetcher===openLibrary?null:fetcher);
- if(!list.length)return {ok:false,candidates:[],message:'No ISBN found in the description or on Open Library. Copy the 13-digit ISBN from the book’s copyright page, then confirm it in Product details.'};
+ if(!list.length)return {ok:false,candidates:[],message:'No confident match was found in the description or on Open Library (titles that don’t match the book, or editions before 1980, are left out). Copy the 13-digit ISBN from the book’s copyright page, then confirm it in Product details.'};
  const top=list[0];const facts:Facts=JSON.parse(r.facts||'{}');
- const describe=(c:BookCandidate)=>`${c.source}: ${c.title?`${c.title}, `:''}${c.publisher||'publisher unknown'}${c.year?`, ${c.year}`:''}, ISBN ${c.isbn}`;
+ const describe=(c:BookCandidate)=>`${c.source}: ${c.title?`${c.title}, `:''}${c.author?`${c.author}, `:''}${c.publisher||'publisher unknown'}${c.year?`, ${c.year}`:''}, ISBN ${c.isbn}`;
  facts.isbn={value:top.isbn,source:describe(top)+(list.length>1?`. Other editions: ${list.slice(1).map(c=>`${c.isbn} (${c.publisher||'?'}${c.year?` ${c.year}`:''})`).join('; ')}`:''),confirmed:false};
  if(top.publisher)facts.publisher={value:top.publisher,source:describe(top),confirmed:false};
  await prisma.resource.update({where:{id:r.id},data:{facts:JSON.stringify(facts)}});

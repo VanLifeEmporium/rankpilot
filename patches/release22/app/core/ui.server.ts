@@ -312,6 +312,18 @@ export async function actionUI(request: Request) {
         return data({ ok: !failed.length || pending.length > 0, changeId: pending.length === 1 ? pending[0].changeId : undefined,
           message: `${plural(pending.length, "brand change")} ready for review.${warned.length ? ` ${warned.length} affect smart collections: ${warned[0].warnings![0]}` : ""}${failed.length ? ` ${failed.length} not prepared: ${failed[0].message}` : ""}${results.length - pending.length - failed.length ? ` ${results.length - pending.length - failed.length} unchanged.` : ""}` });
       }
+      case "confirmBrand": {
+        // Release 22 (R22-403): confirm a brand once; vendor proposals for every product that names it.
+        const { confirmBrand } = await import("./brand-proposals.server");
+        const { brand, results } = await confirmBrand(store.id, { brand: value("brand"), actor });
+        const pending = results.filter((r) => r.status === "pending");
+        const warned = results.filter((r) => r.warnings?.length);
+        const failed = results.filter((r) => !r.ok);
+        const waiting = results.filter((r) => r.status === "exists");
+        await scheduleCatalogueRefresh(store.id);
+        return data({ ok: !failed.length || pending.length > 0, changeId: pending.length === 1 ? pending[0].changeId : undefined,
+          message: `“${brand}” is confirmed as a brand. ${plural(pending.length, "vendor change")} ready for review.${waiting.length ? ` ${waiting.length} already pending.` : ""}${warned.length ? ` ${warned.length} affect smart collections: ${warned[0].warnings![0]}` : ""}${failed.length ? ` ${failed.length} not prepared: ${failed[0].message}` : ""}` });
+      }
       case "bookSuggest": {
         const { suggestBook } = await import("./brand-proposals.server");
         const r = await suggestBook(store.id, value("id"));

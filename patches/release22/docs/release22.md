@@ -175,3 +175,89 @@ The house-style capitals check allows:
 - brands in pending vendor proposals.
 
 So "NETGEAR" and "AFERIY" are no longer flagged.
+
+## Sprint 3: better suggestions
+
+Release marker: `2026-10-01-release-22-s3`.
+
+### R22-301 Every product template sampled
+
+**Reported page checked first.** These checks used the Shopify Admin API (read-only) and the live theme:
+
+- `/products/led-camping-lantern-power-bank` uses the default product template (no template suffix).
+- The live theme's main product section outputs `{{ product | structured_data }}` without a condition, so the default template does output Product data.
+
+The live HTML can't be fetched from the build environment, because the storefront is blocked there. The deployed audit fetches it, as described below.
+
+**What changed:**
+
+- The rendered-page sample now fetches one product per product template in use before the rest, so an alternate template is never skipped by the crawl limit.
+- Products now carry their template suffix.
+- `product-schema-missing` names the template the page uses (for example "product.bundle").
+
+### R22-501 Redirects match the product type
+
+- When a sync deletes a product or collection, its handle, title and product type are kept (the last 1,000).
+- A dead product is redirected only to a live product **of the same type**, or to a collection. A picnic table is never sent to a camping toilet.
+- A dead collection is redirected only to a collection.
+- When a product and a collection score the same, the collection is suggested.
+- When nothing shares the type or a search term, the finding says to leave the 404.
+
+### R22-503 What a missing search term is
+
+The "title missing search terms" finding now says whether each missing word is:
+
+- the brand;
+- a model name or number;
+- a description ("stainless steel" is a description, not a brand or model).
+
+The example title:
+
+- keeps the brand first;
+- converts units by what they measure;
+- puts the words where the search has them, for example "Thermos 470ml Stainless Steel Food Flask";
+- never starts with a bracket.
+
+### R22-504 Book suggestions
+
+Open Library candidates must:
+
+- share most of the book's significant title words;
+- be from 1980 or later.
+
+So "In Morocco" (1920) is no longer offered for "Morocco – A Vanlife Guide". The result says no confident match was found. Each candidate shows its author, year and cover, so you can pick between editions (Ulysses Press or Pavilion Books).
+
+### R22-505 Every image's alt text checked
+
+Generate alt text now also rewrites alts that are:
+
+- keyword-stuffed, image 1 included ("20L Cool Box, Ice Box, Large Cool Box, …");
+- in capitals ("FALCON round Pie Dish White 26CM");
+- generic ("Product image 3").
+
+The model reports whether a van, campsite or outdoor scene is actually visible. Otherwise phrases such as "in a van-life setting" are removed. Alts are written in sentence case, and acronyms such as LED and USB are kept.
+
+### R22-601 Questions by product type
+
+Readiness only asks the questions that fit the product type:
+
+| Product | Material and care asked? | Power asked? | Battery or sensor life asked? |
+|---|---|---|---|
+| Safety device (CO, smoke or gas alarm, detector, fire extinguisher) | No | Yes | Yes |
+| Electrical product | Yes | Yes | No |
+
+For tents, sleeping bags and other camping gear, the fit question is "What is the packed size?", and FAQ suggestions use a packed or folded size.
+
+### R22-602 Live FAQ answers count
+
+RankPilot FAQ answers count towards answer readiness once they are on the live page. They don't count while the FAQ change reads "Saved, not live", or while the live theme has no FAQ block. So the score rises when the block is added.
+
+### R22-403 Confirm a brand once
+
+On a brand finding, "Confirm “Polarbox” for every product that names it" does three things:
+
+1. It remembers the brand. From the next audit it is matched like a listed brand and allowed in capitals.
+2. It creates a pending vendor change for every product that names the brand but lists the store (or no brand) as its vendor.
+3. It shows smart-collection warnings in the result and in each change, before anything is approved.
+
+Confirming again creates no duplicates. The same action is available to the agent as `POST /api/agent/confirm-brand`.

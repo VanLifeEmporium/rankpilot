@@ -99,7 +99,11 @@ export async function catalogueAuditPaged(storeId:string){
  const store=await prisma.store.findUnique({where:{id:storeId}});const cfg=settings(store?.settings||'{}');
  // Release 22 (R22-305, R22-401): brands in pending vendor proposals count as known brands.
  const pendingBrands=(await prisma.change.findMany({where:{storeId,feature:'vendor',status:{in:['pending','approved','applying','verifying']}},select:{after:true}})).map(c=>{try{return String(JSON.parse(c.after));}catch{return '';}}).filter(Boolean);
- const prescan=createPrescan({storeName:JSON.parse(store?.discoveries||'{}').shop?.name||cfg.titleBrand||'',deliveryPolicy:!!(cfg.policies?.source&&cfg.policies?.delivery),capsAllowlist:cfg.capsAllowlist,knownBrands:pendingBrands});
+ // Release 22 (R22-602): RankPilot FAQs only answer questions once they are live on the page.
+ const discoveries=JSON.parse(store?.discoveries||'{}');
+ const notLive=await prisma.change.findMany({where:{storeId,feature:'faq',status:{in:['applied','verified']},error:{startsWith:'Saved, not live'}},select:{resourceId:true}});
+ const faqAllNotLive=discoveries.faqStatus?.block===false&&(discoveries.faqStatus?.products||0)>0;
+ const prescan=createPrescan({storeName:discoveries.shop?.name||cfg.titleBrand||'',deliveryPolicy:!!(cfg.policies?.source&&cfg.policies?.delivery),capsAllowlist:cfg.capsAllowlist,knownBrands:[...pendingBrands,...(cfg.confirmedBrands||[])],faqNotLive:new Set(notLive.map(c=>c.resourceId)),faqAllNotLive});
  for await(const page of resourcePages<AuditResource>({storeId,kind:'product'},{id:true,kind:true,payload:true,title:true}))prescan.add(page);
  // Pass 2: the checks.
  const auditor=createCatalogueAuditor(prescan.context());
@@ -258,6 +262,9 @@ export async function sync(storeId: string, productId?: string) {
       if (kind === "product") await hydrateProduct(client, node);
       await saveResource(storeId, node.id, kind, normalise(node, kind));
     }
+    // Release 22 (R22-501): keep what deleted pages were, for redirect matching.
+    const gone = await prisma.resource.findMany({ where: { storeId, kind, remoteId: { notIn: nodes.map((n) => n.id) } }, select: { kind: true, handle: true, title: true, payload: true } });
+    if (gone.length) { const { rememberRetired } = await import("./index-hygiene.server"); await rememberRetired(storeId, gone); }
     await prisma.resource.deleteMany({
       where: { storeId, kind, remoteId: { notIn: nodes.map((n) => n.id) } },
     });
@@ -339,7 +346,7 @@ export async function audit(storeId: string) {
     answerReadiness: result.answerReadiness,
     // Release 20.1: per page-type catalogue scores, read by the page loader instead of re-running the audit.
     healthScores: result.healthScores,
-    answerMethod: "7 shopper questions: size, material, what is included, weight, care, fit, delivery",
+    answerMethod: "Shopper questions that apply to each product: size, material, what is included, weight, care, fit or packed size, power, battery life, delivery. FAQs count once live on the page.",
   };
   if (!store.demo) {
     const crawl = await crawlStore(

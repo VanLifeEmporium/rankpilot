@@ -71,17 +71,21 @@ export function vendorProblems(p:Payload,ctx:VendorContext,facts:Facts={}):Barco
 // ---- R19-04: answer readiness (7 shopper questions) ----
 export const ANSWER_QUESTIONS=[
  {key:'size',label:'No size given'},{key:'material',label:'No material given'},{key:'included',label:"No “what's included”"},
- {key:'weight',label:'No weight given'},{key:'care',label:'No care instructions'},{key:'fit',label:'No fit guidance (van, locker or shelf)'},{key:'delivery',label:'No delivery information'},
+ {key:'weight',label:'No weight given'},{key:'care',label:'No care instructions'},{key:'fit',label:'No fit guidance (van, locker, shelf or packed size)'},{key:'delivery',label:'No delivery information'},
+ // Release 22 (R22-601): asked only of the product types they apply to (electricals and safety devices).
+ {key:'power',label:'No power source given'},{key:'lifespan',label:'No battery or sensor life given'},
 ] as const;
 export type AnswerKey=typeof ANSWER_QUESTIONS[number]['key'];
-const FACT_FOR:Record<AnswerKey,string[]>={size:['dimensions','capacity'],material:['materials'],included:['included'],weight:['weight'],care:['care'],fit:['compatibility'],delivery:[]};
+const FACT_FOR:Record<AnswerKey,string[]>={size:['dimensions','capacity'],material:['materials'],included:['included'],weight:['weight'],care:['care'],fit:['compatibility'],delivery:[],power:['power'],lifespan:[]};
 const PATTERNS:Record<AnswerKey,RegExp>={
  size:/\b\d+(?:[.,]\d+)?\s?(?:x\s?\d+(?:[.,]\d+)?\s?)*(?:mm|cm|m|metres?|litres?|l|ml)\b|\b(?:dimensions|measures|diameter|height|width|length|depth)\b[^.]{0,40}\d/i,
  material:/\b(?:made (?:from|of|with)|material|fabric|cotton|linen|wool|polyester|nylon|canvas|leather|seagrass|rattan|jute|bamboo|wood(?:en)?|oak|pine|teak|acacia|steel|aluminium|enamel|ceramic|stoneware|porcelain|glass|silicone|plastic|polypropylene|fleece|flannel|(?:duck|goose) down|down[- ]filled|velvet|marble|resin)\b/i,
  included:/\b(?:what'?s included|what is included|includes?\b|comes with|in the box|supplied with|set of \d+|pack of \d+|\d+\s?x\s?[a-z])/i,
  weight:/\b\d+(?:[.,]\d+)?\s?(?:kg|g|grams?|kilograms?)\b|\bweighs?\b[^.]{0,30}\d/i,
  care:/\b(?:(?:machine |hand )?wash(?:able|ing)?|wipe (?:clean|down|dry)|clean (?:with|using|by)|cleaning|care (?:instructions|guide|label)|to care for|dry clean|tumble|dishwasher|oil(?:ing)? (?:the|it)|maintenance)\b/i,
- fit:/\b(?:fits?|fitting|locker|shelf|shelves|cupboard|under[- ]bed|under[- ]seat|campervan|motorhome|in the van|in your van|caravan|small spaces?|stows?|packs? (?:flat|down|small))\b/i,
+ fit:/\b(?:fits?|fitting|locker|shelf|shelves|cupboard|under[- ]bed|under[- ]seat|campervan|motorhome|in the van|in your van|caravan|small spaces?|stows?|packs? (?:flat|down|small|away)|pack(?:ed)? size|folded size|folds? (?:down|flat) to)\b/i,
+ power:/\b(?:batter(?:y|ies)|mains|plug[- ]in|usb(?:[- ]?c)?|rechargeable|12\s?v|230\s?v|240\s?v|aaa?\b|solar|hard[- ]?wired|powered by|power supply)\b/i,
+ lifespan:/\b(?:(?:battery|sensor|alarm) life|lifespan|life of \d+|\d+[- ]?(?:year|yr)s?\s+(?:sealed\s+)?(?:battery|sensor|life)|lasts? (?:up to )?\d+\s?(?:years?|hours?|hrs?)|replace (?:it |the alarm )?(?:after|every) \d+)\b/i,
  delivery:/\b(?:delivery|delivered|dispatch(?:ed)?|ships?|shipping|postage)\b/i,
 };
 /** Which of the 7 questions the product page answers, from its description, confirmed facts and metafields. */
@@ -97,17 +101,32 @@ const NOT_RELEVANT:Partial<Record<AnswerKey,RegExp>>={
  size:/\b(gift cards?|digital)\b/i,
  included:/\b(gift cards?|digital)\b/i,
 };
+/** Release 22 (R22-601): product types with their own questions. */
+export const SAFETY_DEVICE=/\b(?:alarms?|detectors?|extinguishers?|smoke|carbon monoxide|fire blankets?)\b/i;
+export const ELECTRICAL=/\b(?:power stations?|power banks?|lanterns?|torch(?:es)?|flashlights?|lights?|lamps?|speakers?|fans?|heaters?|chargers?|routers?|projectors?|radios?|fridges?|refrigerators?|freezers?|blenders?|vacuums?|air pumps?|inflators?|electric|rechargeable|bluetooth|zappers?)\b/i;
+const CAMP_GEAR=/\b(?:tents?|awnings?|shelters?|sleeping bags?|sleeping (?:mats?|pads?)|hammocks?|chairs?|tables?|stools?|loungers?|camp(?:ing)? furniture|privacy enclosures?|backpacks?)\b/i;
 export function relevantQuestions(p:Payload){
- const kind=`${p.productType||''}`;
- return ANSWER_QUESTIONS.filter(q=>q.key!=='delivery'&&!(NOT_RELEVANT[q.key]?.test(kind)));
+ const kind=`${p.productType||''}`;const both=`${p.productType||''} ${p.title||''}`;
+ const safety=SAFETY_DEVICE.test(kind);
+ return ANSWER_QUESTIONS.filter(q=>{
+  if(q.key==='delivery')return false;
+  // A CO alarm is not marked down for a material or care instructions; it is asked about power and sensor life.
+  if(safety&&(q.key==='material'||q.key==='care'))return false;
+  if(q.key==='power')return safety||ELECTRICAL.test(both);
+  if(q.key==='lifespan')return safety;
+  return !(NOT_RELEVANT[q.key]?.test(kind));
+ });
 }
+/** Release 22 (R22-601): for tents and other camping gear, "fit" means the packed size, not clothing fit. */
+export const fitQuestion=(p:Payload)=>CAMP_GEAR.test(`${p.productType||''} ${p.title||''}`)?'What is the packed size?':'Will it fit in my van?';
 /** Text a shopper can read on the page: description, FAQs and the variant options they choose from. */
-export function shopperText(p:Payload){
+export function shopperText(p:Payload,opts:{faqs?:boolean}={}){
  const options=(p.variants||[]).flatMap(v=>(v.selectedOptions||[]).map(o=>`${o.name}: ${o.value}`));
- return load(`<div>${p.descriptionHtml||''}</div>`,null,false).root().text()+'\n'+(p.faqs||[]).map(f=>`${f.question} ${f.answer}`).join('\n')+'\n'+[...new Set(options)].join('\n');
+ return load(`<div>${p.descriptionHtml||''}</div>`,null,false).root().text()+'\n'+(opts.faqs===false?'':(p.faqs||[]).map(f=>`${f.question} ${f.answer}`).join('\n'))+'\n'+[...new Set(options)].join('\n');
 }
-export function answeredQuestions(p:Payload,facts:Facts,opts:{deliveryPolicy?:boolean}={}):Record<AnswerKey,boolean>{
- const text=shopperText(p);
+// Release 22 (R22-602): RankPilot FAQ answers count once they are live on the page (faqLive), not while "Saved, not live".
+export function answeredQuestions(p:Payload,facts:Facts,opts:{deliveryPolicy?:boolean;faqLive?:boolean}={}):Record<AnswerKey,boolean>{
+ const text=shopperText(p,{faqs:opts.faqLive!==false});
  const meta=Object.entries(p.metafields||{}).map(([k,v])=>`${k}: ${v}`).join('\n');
  const result={} as Record<AnswerKey,boolean>;
  for(const q of ANSWER_QUESTIONS){
@@ -194,7 +213,7 @@ export function contentUnits(p:Payload){
 // ---- Release 20 (RP-402): suggested FAQ questions from the facts a page already has ----
 // Release 22 (R22-502): each answer must fit its question (faq-facts.ts): a size needs a length or
 // volume, a load is asked as "How much weight does it hold?", storage advice never answers cleaning.
-const TOPICS:Partial<Record<AnswerKey,FactFaq['topic'][]>>={size:['size','capacity','load','people'],material:['material'],included:['included'],weight:['weight'],care:['care'],fit:['fit']};
+const TOPICS:Partial<Record<AnswerKey,FactFaq['topic'][]>>={size:['size','capacity','load','people'],material:['material'],included:['included'],weight:['weight'],care:['care'],fit:['fit'],power:['power']};
 export type FaqSuggestion={question:string;answer:string;source:string};
 export function faqSuggestions(p:Payload,facts:Facts,pageFacts:Facts){
  const suggestions:FaqSuggestion[]=[];const needed:string[]=[];
@@ -203,9 +222,11 @@ export function faqSuggestions(p:Payload,facts:Facts,pageFacts:Facts){
  const options=[...pick(confirmed as Facts),...pick(pageFacts)];
  for(const q of relevantQuestions(p)){
   const topics=TOPICS[q.key];if(!topics)continue;
-  const found=options.filter(o=>topics.includes(o.topic));
+  // Release 22 (R22-601): for camping gear the fit question is the packed size, answered by a packed or folded size.
+  const packed=q.key==='fit'&&fitQuestion(p)==='What is the packed size?';
+  const found=packed?options.filter(o=>o.topic==='size'&&/\b(?:pack(?:ed|s)?|fold(?:ed|s)?)\b/i.test(o.answer)).map(o=>({...o,question:fitQuestion(p)})):options.filter(o=>topics.includes(o.topic));
   for(const o of found){if(suggestions.some(s=>s.question===o.question))continue;suggestions.push({question:o.question,answer:o.answer,source:o.fact?.confirmed?`Confirmed fact (${o.fact.source})`:o.fact?.source||'Product description'});}
-  if(!found.length)needed.push(q.label.replace(/^No /,'').replace(/ given$/,''));
+  if(!found.length)needed.push(packed?'packed size':q.label.replace(/^No /,'').replace(/ given$/,''));
  }
  return {suggestions:suggestions.slice(0,4),needed};
 }
