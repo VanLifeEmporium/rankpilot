@@ -20,7 +20,7 @@ import {FactImport} from './FactImport';
 import {SpecReview} from './SpecReview';
 import {IndexEvidence} from './IndexEvidence';
 import {DiscardBar} from './Confirm';
-import {SnoozedList,NoBarcodeBulk,UnpublishedList} from './FindingDecisions';
+import {SnoozedList,NoBarcodeBulk,UnpublishedList,InProgressList} from './FindingDecisions';
 import {AiAnswers} from './AiAnswers';
 import {changeStatus,reviewable} from '../core/workflow-ui';
 import {Connections} from "./Connections";
@@ -605,6 +605,7 @@ export default function Workspace() {
               <section className="card" id="index-coverage"><SectionHeading title="Index coverage report"/><IndexEvidence/></section>
               <SnoozedList snoozed={d.snoozed}/>
               <UnpublishedList issues={d.unpublishedIssues}/>
+              <InProgressList issues={d.inProgressIssues} onReview={id=>{setFixGroup(null);setFactId("");setReviewId(id);}}/>
               <div className="metrics-grid">
                 <Metric
                   label="Catalogue checks"

@@ -200,6 +200,8 @@ export function fieldValue(p: Payload, feature: string) {
       return p.images.map(({ id, alt }) => ({ id, alt }));
     case "filename":
       return p.images.map(({ id, filename }) => ({ id, filename }));
+    case "published":
+      return p.published !== false;
     default:
       throw new Error("Unknown feature");
   }
@@ -212,6 +214,7 @@ export function withField(p:Payload,feature:string,value:unknown):Payload {
  else if(feature==='title')next.title=z.string().parse(value);
  else if(feature==='handle')next.handle=z.string().parse(value);
  else if(feature==='vendor')next.vendor=z.string().parse(value);
+ else if(feature==='published')next.published=z.boolean().parse(value);
  else if(feature==='barcode'){const rows=z.array(z.object({id:z.string(),barcode:z.string()})).parse(value);next.variants=(next.variants||[]).map(v=>({...v,...(rows.find(r=>r.id&&r.id===v.id)?{barcode:rows.find(r=>r.id===v.id)!.barcode}:{})}));}
  else if(feature==='alt'){
   const alts=z.array(z.object({id:z.string(),alt:z.string()})).parse(value);
@@ -357,6 +360,8 @@ export async function audit(storeId: string) {
       { shopName: JSON.parse(store.discoveries || "{}").shop?.name || settings(store.settings).titleBrand },
     );
     result.issues.push(...crawl.issues);
+    // Release 22 (R22-703): redirected pages keep only their redirect finding.
+    { const {dropRedirectedPageFindings}=await import('./finding-state'); result.issues=dropRedirectedPageFindings(result.issues); }
     // Release 19: each rendered page is one more check; a page that renders wrongly is a failed check.
     const {RENDERED_CODES}=await import('./rendered-page');
     const renderFailed=new Set(crawl.issues.filter(i=>RENDERED_CODES.has(i.code)&&i.severity!=='notice'&&i.resourceId!=='store').map(i=>i.resourceId)).size;

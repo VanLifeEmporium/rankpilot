@@ -111,7 +111,7 @@ export async function suggestBook(storeId:string,resourceId:string,fetcher:((url
  if(!list.length)return {ok:false,candidates:[],message:'No confident match was found in the description or on Open Library (titles that don’t match the book, or editions before 1980, are left out). Copy the 13-digit ISBN from the book’s copyright page, then confirm it in Product details.'};
  const top=list[0];const facts:Facts=JSON.parse(r.facts||'{}');
  const describe=(c:BookCandidate)=>`${c.source}: ${c.title?`${c.title}, `:''}${c.author?`${c.author}, `:''}${c.publisher||'publisher unknown'}${c.year?`, ${c.year}`:''}, ISBN ${c.isbn}`;
- facts.isbn={value:top.isbn,source:describe(top)+(list.length>1?`. Other editions: ${list.slice(1).map(c=>`${c.isbn} (${c.publisher||'?'}${c.year?` ${c.year}`:''})`).join('; ')}`:''),confirmed:false};
+ facts.isbn={value:top.isbn,source:describe(top)+(list.length>1?`. Other editions: ${list.slice(1).map(c=>`${c.isbn} (${c.publisher||'?'}${c.year?` ${c.year}`:''})`).join('; ')}`:''),confirmed:false,options:list.slice(0,5)};
  if(top.publisher)facts.publisher={value:top.publisher,source:describe(top),confirmed:false};
  await prisma.resource.update({where:{id:r.id},data:{facts:JSON.stringify(facts)}});
  return {ok:true,candidates:list,message:`Suggested ${top.publisher||'publisher unknown'} and ISBN ${top.isbn}${top.year?` (${top.year} edition)`:''}. Check the edition matches the copy you sell, then save.`};

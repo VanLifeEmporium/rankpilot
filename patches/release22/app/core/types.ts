@@ -11,7 +11,9 @@ export type Feature =
   /** Release 19: product vendor (brand), agent-proposed and merchant-approved. */
   | "vendor"
   /** Release 20 (RP-203): variant barcodes (ISBN for books), merchant-confirmed. */
-  | "barcode";
+  | "barcode"
+  /** Release 22 (R22-604): republish an unpublished page or blog post (undo unpublishes it again). */
+  | "published";
 export const features: Feature[] = [
   "title",
   "description",
@@ -22,7 +24,9 @@ export const features: Feature[] = [
   "faq",
   "links",
 ];
-export type Fact = { value: string; source: string; confirmed: boolean };
+/** Release 22 (R22-702): book editions offered with an ISBN suggestion, shown side by side for the merchant to pick. */
+export type BookOption = { isbn: string; publisher: string; year?: string; title?: string; author?: string; cover?: string; source: string };
+export type Fact = { value: string; source: string; confirmed: boolean; options?: BookOption[] };
 export type Facts = Record<string, Fact>;
 export type Image = {
   id: string;
@@ -80,6 +84,8 @@ export type Issue = {
   unpublished?: boolean;
   /** Release 20 (RP-201): the manufacturer found in the title, description or handle. */
   brand?: { vendor: string; confidence: "high" | "medium"; evidence: { where: string; text: string }[] };
+  /** Release 22 (R22-603): the repeated text, with "<product name>" for the product's name. */
+  template?: string;
 };
 export type Settings = {
   autopilot: Partial<Record<Feature, boolean>>;

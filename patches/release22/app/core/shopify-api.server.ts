@@ -204,6 +204,12 @@ export async function updateResource(
       ],
     });
   }
+  // Release 22 (R22-604): publish or unpublish a page or blog post (write_content). Products need a
+  // publications permission RankPilot does not request, so they are republished in Shopify admin.
+  if (feature === "published") {
+    if (kind !== "page" && kind !== "article") throw new Error("Republish products in Shopify admin (Products › Sales channels). RankPilot can republish pages and blog posts.");
+    return graphql(client, operations[kind], { id: remoteId, input: { isPublished: z.boolean().parse(value) } });
+  }
   if (feature === "barcode") {
     const rows = z.array(z.object({ id: z.string().min(1), barcode: z.string() })).min(1).parse(value);
     return graphql(client, operations.variants, { productId: remoteId, variants: rows.map((v) => ({ id: v.id, barcode: v.barcode })) });

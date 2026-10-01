@@ -13,6 +13,21 @@ export function revenueIndex(snapshot:{start?:string;end?:string;rows?:{dimensio
  if(!baseline)return null;
  return {score:Math.min(100,Math.round(50*(current/28)/(baseline/90))),current,baseline,ratio:(current/28)/(baseline/90)};
 }
+/**
+ * Release 22 (R22-306): index coverage is the average of the last 3 samples (each sample's indexed share
+ * of inspected pages), so one small sample doesn't swing the score. The label says how many pages were inspected.
+ */
+type Coverage={indexed:number;inspected:number;history?:{at:string;indexed:number;inspected:number}[]};
+export function coverageAverage(idx:Coverage){
+ const samples=(Array.isArray(idx.history)?idx.history:[]).filter(h=>h&&h.inspected>0).slice(-3);
+ if(!samples.length)return 100*idx.indexed/idx.inspected;
+ return samples.reduce((n,h)=>n+100*h.indexed/h.inspected,0)/samples.length;
+}
+export function coverageLabel(idx:Coverage|undefined){
+ if(!idx||!(idx.inspected>0))return 'Inspected Google index coverage';
+ const n=(Array.isArray(idx.history)?idx.history:[]).filter(h=>h&&h.inspected>0).slice(-3).length;
+ return `Inspected Google index coverage (${idx.inspected} ${idx.inspected===1?'page':'pages'} inspected${n>1?`, average of the last ${n} checks`:''})`;
+}
 /** Supplement catalogue checks with measured technical signals; unknown is not a pass. */
 export function technicalHealth(input:ScoreInput){
  const speed=metricPair(input.metrics,'pagespeed')[0];const idx=metricPair(input.metrics,'indexation')[0];
@@ -25,7 +40,7 @@ export function technicalHealth(input:ScoreInput){
  const lab=recent(speed?.checkedAt)&&typeof speed.score==='number'?100*speed.score:null;
  const parts=[{label:'Catalogue checks',weight:25,value:input.technical??null},
  {label:field!==null?'Real-visitor speed (Chrome UX Report)':'Mobile speed (single lab sample)',weight:25,value:field??lab},
- {label:'Inspected Google index coverage',weight:30,value:recent(idx?.checkedAt)&&idx.inspected>0?100*idx.indexed/idx.inspected:null},
+ {label:coverageLabel(idx),weight:30,value:recent(idx?.checkedAt)&&idx.inspected>0?coverageAverage(idx):null},
  {label:'Scanned structured data',weight:20,value:schema}];
  const measured=parts.filter(p=>p.value!==null);const weight=measured.reduce((n,p)=>n+p.weight,0);
  return {score:weight?Math.round(measured.reduce((n,p)=>n+p.weight*Math.min(100,Math.max(0,p.value!)),0)/weight):null,parts,schema,partial:weight<100||!!(idx&&idx.inspected<idx.submitted)};

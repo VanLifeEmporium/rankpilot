@@ -82,7 +82,7 @@ describe("RP-302 dead pages with impressions", () => {
     const issues = await deadPagesWithImpressions(STORE);
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ code: "unpublished-with-impressions", suggestion: { path: "/collections/camping-chairs" } });
-    expect(issues[0].detail).toMatch(/Republish it in Shopify/);
+    expect(issues[0].detail).toMatch(/Republish it if it should be live/);
     expect(issues[0].detail).toMatch(/redirect it to Camping Chairs/);
   });
 });
