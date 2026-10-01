@@ -1,8 +1,9 @@
 import { specFacts } from "./spec-extract";
 import { factFaqs, correctedFaqs } from "./faq-facts";
+import { brandList, learnTitleBrands } from "./brand-detect";
 import { confirmedNoBarcode } from "./finding-state";
 import { blockingMarkup } from "./html-cleanup";
-import { ruleErrors, ruleSummary, allowedCaps } from "./brand-rules";
+import { ruleErrors, ruleSummary, allowedCaps, metricTitle, VOLUME_PRODUCT } from "./brand-rules";
 import { contentUnits, faqSuggestions, mentionsDelivery, relevantQuestions, articleFacts, nextSeason, duplicateAlts, faqQuestionTexts, normaliseQuestion, barcodeProblems, vendorProblems, vendorKey, answeredQuestions, ANSWER_QUESTIONS, type VendorContext } from "./catalogue-checks";
 import {supplierSignals} from './content-policy';
 import { load } from "cheerio";
@@ -100,10 +101,12 @@ export type AuditResource = {
   keyword: string;
   facts: string;
 };
-export type AuditContext = { templateQuestions: Set<string>; vendors: VendorContext["vendors"]; storeName: string; deliveryPolicy: boolean; sharedDelivery?: boolean; capsAllowlist?: string[]; templateSentences?: Map<string, string>; productCount?: number };
+export type AuditContext = { templateQuestions: Set<string>; vendors: VendorContext["vendors"]; storeName: string; deliveryPolicy: boolean; sharedDelivery?: boolean; capsAllowlist?: string[]; knownBrands?: string[]; learnedBrands?: string[]; handleLeads?: Map<string, number>; templateSentences?: Map<string, string>; productCount?: number };
 /** Release 19: first pass over the catalogue — shared FAQ questions and vendor spellings. */
-export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boolean; capsAllowlist?: string[] } = {}) {
+export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boolean; capsAllowlist?: string[]; knownBrands?: string[] } = {}) {
   const questions = new Map<string, number>();
+  const storeTitles: string[] = [];
+  const handleLeads = new Map<string, number>();
   const sentences = new Map<string, { n: number; sample: string }>();
   let withDelivery = 0;
   const vendors = new Map<string, Map<string, number>>();
@@ -121,6 +124,9 @@ export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boole
         if (sentences.size > 60000) for (const [k, e] of sentences) if (e.n === 1) sentences.delete(k);
         const v = (p.vendor || "").trim();
         if (v) { const k = vendorKey(v); const m = vendors.get(k) || new Map<string, number>(); m.set(v, (m.get(v) || 0) + 1); vendors.set(k, m); }
+        { const lead = (p.handle || "").split("-")[0].toLowerCase(); if (lead) handleLeads.set(lead, (handleLeads.get(lead) || 0) + 1); }
+        // Release 22 (R22-401): titles of store-branded products, to learn brands that aren't listed.
+        if (!v || (opts.storeName && vendorKey(v) === vendorKey(opts.storeName))) storeTitles.push(p.title || "");
       }
     },
     context(): AuditContext {
@@ -129,7 +135,9 @@ export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boole
       // Release 20 (RP-401): a sentence on at least 20% of products (and 5 or more) is repeated template text.
       const templateSentences = new Map([...sentences].filter(([, e]) => products >= 10 && e.n >= Math.max(5, products * 0.2)).sort((a, b) => b[1].n - a[1].n).slice(0, 10).map(([k, e]) => [k, e.sample]));
       // A delivery line on most products is a shared, store-level answer.
-      return { templateQuestions, templateSentences, productCount: products, vendors, capsAllowlist: opts.capsAllowlist || [], storeName: opts.storeName || "", deliveryPolicy: !!opts.deliveryPolicy, sharedDelivery: products > 0 && withDelivery / products >= 0.5 };
+      const learnedBrands = learnTitleBrands(storeTitles);
+      const knownBrands = [...new Set([...brandList([...vendors.values()].map((m) => [...m.keys()][0]), opts.storeName || ""), ...learnedBrands, ...(opts.knownBrands || [])])];
+      return { templateQuestions, templateSentences, productCount: products, vendors, learnedBrands, knownBrands, handleLeads, capsAllowlist: opts.capsAllowlist || [], storeName: opts.storeName || "", deliveryPolicy: !!opts.deliveryPolicy, sharedDelivery: products > 0 && withDelivery / products >= 0.5 };
     },
   };
 }
@@ -165,7 +173,7 @@ export const kindScore = (t: { count: number; checks: number; failed: number }) 
 });
 /** Release 20.1: stored product ids per repeated-template finding (the count stays exact). */
 export const TEMPLATE_ID_LIMIT = 200;
-export function auditCatalogue(resources: AuditResource[], opts: { storeName?: string; deliveryPolicy?: boolean; capsAllowlist?: string[] } = {}) {
+export function auditCatalogue(resources: AuditResource[], opts: { storeName?: string; deliveryPolicy?: boolean; capsAllowlist?: string[]; knownBrands?: string[] } = {}) {
   const prescan = createPrescan(opts);
   prescan.add(resources);
   const auditor = createCatalogueAuditor(prescan.context());
@@ -261,10 +269,16 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
     // Release 18: supplier markup that blocks edits (H1, buttons, forms, unsafe links).
     {const blocking=blockingMarkup(p.descriptionHtml||'');if(blocking.length)add('supplier-markup','notice',`The description contains ${blocking.join(', ')}. RankPilot will not edit around this markup. Use "Clean supplier formatting" to remove it and keep the text.`);}
     // Release 19 (R19-22, R19-18): house style from the shared brand rules. Units are their own finding.
-    {const hits=ruleErrors(`${p.title}\n${p.seo?.title||''}\n${p.seo?.description||''}\n${p.descriptionHtml||''}`,{allow:allowedCaps(p.vendor,p.title,ctx.capsAllowlist)});
-     const style=hits.filter(h=>h.rule!=='Imperial units'),units=hits.filter(h=>h.rule==='Imperial units');
+    // Release 22 (R22-302): ounces convert by what they measure; a unit in the title gets its own title proposal.
+    // Release 22 (R22-305): approved brands (vendors), listed brands and pending brand proposals are allowed in capitals.
+    {const opts={allow:allowedCaps(p.vendor,p.title,ctx.capsAllowlist,ctx.knownBrands),volume:VOLUME_PRODUCT.test(`${p.productType||''} ${p.title}`)};
+     const hits=ruleErrors(`${p.title}\n${p.seo?.title||''}\n${p.seo?.description||''}\n${p.descriptionHtml||''}`,opts);
+     const style=hits.filter(h=>h.rule!=='Imperial units');
+     const units=ruleErrors(`${p.seo?.title||''}\n${p.seo?.description||''}\n${p.descriptionHtml||''}`,opts).filter(h=>h.rule==='Imperial units');
      if(style.length&&['product','collection'].includes(r.kind))add('supplier-formatting','warning',`Breaks the house style: ${ruleSummary(style)}. Rewrite the wording in Shopify or with a reviewed description change.`,'description');
-     if(units.length)add('imperial-units','warning',`Imperial units: ${units.map(u=>u.match).slice(0,5).join(', ')}. Give metric measurements (cm, kg, litres).`,'description');}
+     if(units.length)add('imperial-units','warning',`Imperial units: ${units.map(u=>u.match).slice(0,5).join(', ')}. Give metric measurements (cm, kg, litres).`,'description');
+     const title=metricTitle(p.title,opts);
+     if(title)add('imperial-units','warning',`The title uses imperial units: “${p.title}”. Suggested title: “${title}”.`,'title');}
     // R19-18: long page addresses.
     {const path=r.kind==='article'?`/blogs/${p.blogHandle||'x'}/${p.handle}`:`/${r.kind}s/${p.handle}`;if(path.length>60)add('long-url','notice',`The address ${path} is ${path.length} characters. Shorter addresses read better in search results; changing it adds a redirect from the old address.`,'handle');}
     // R19-18: the same alt text on several images of one product.
@@ -307,6 +321,13 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
       }
       // Release 19: questions shared by more than 10% of products are a template and do not count.
       const ownQuestions = faqQuestionTexts(p).filter((q) => !ctx.templateQuestions.has(normaliseQuestion(q, p.title)));
+      // Release 22 (R22-105): FAQs from two sources on one page.
+      if ((p.faqs || []).length) {
+        const otherApp = Object.keys(p.metafields || {}).filter((k) => /faq/i.test(k));
+        if (otherApp.length) add("duplicate-faq-source", "warning", `This product has RankPilot FAQs and FAQ data from another app (${otherApp.join(", ")}). Showing both repeats the questions and can send conflicting FAQ data to Google. Keep the RankPilot FAQs (shown by the RankPilot FAQ block) and remove the other app's FAQ block or data.`);
+        const inDescription = faqQuestionTexts({ ...p, faqs: [] });
+        if (inDescription.length >= 2) add("duplicate-faq-source", "notice", `The description also has an FAQ section (${inDescription.length} questions, e.g. “${inDescription[0]}”) while the RankPilot FAQ block shows the saved FAQs. Remove the description FAQ section so the page shows one set of answers.`, "description");
+      }
       // Release 22 (R22-106): saved answers that don't fit their question ("How big is it? 204 kg").
       if ((p.faqs || []).length) {
         const { fixed } = correctedFaqs(p.faqs || [], { ...specFacts(p.descriptionHtml || ""), ...Object.fromEntries(Object.entries(f).filter(([k, v]) => k !== "barcode" && v?.confirmed)) }, (p.descriptionHtml || "").replace(/<[^>]+>/g, " "));

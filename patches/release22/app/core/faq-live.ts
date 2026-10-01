@@ -6,7 +6,7 @@ import { load } from "cheerio";
  */
 export const SAVED_NOT_LIVE = "Saved, not live";
 const fold = (s: string) => s.normalize("NFKC").replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, " ").trim().toLowerCase();
-export type FaqPageCheck = { block: boolean; missing: string[]; live: boolean; faqPages: number; sources: string[] };
+export type FaqPageCheck = { block: boolean; missing: string[]; live: boolean; faqPages: number; sources: string[]; shownElsewhere?: number };
 const faqPageCount = (html: string) => {
   const $ = load(html);
   let n = 0;
@@ -31,7 +31,10 @@ export function faqOnPage(html: string, faqs: { question: string; answer: string
   const text = fold($("[data-rankpilot-faq]").length ? $("[data-rankpilot-faq]").text() : $("body").text());
   const missing = faqs.filter((f) => f.question && !text.includes(fold(f.question))).map((f) => f.question);
   const { n, sources } = faqPageCount(html || "");
-  return { block, missing, live: block && faqs.length > 0 && missing.length === 0, faqPages: n, sources };
+  // R22-105: the same questions shown outside the block (e.g. a stopgap Custom Liquid block).
+  const outside = (() => { const c = load(html || ""); c("[data-rankpilot-faq],script,style,noscript").remove(); return fold(c("body").text()); })();
+  const shownElsewhere = block ? faqs.filter((f) => f.question && outside.includes(fold(f.question))).length : 0;
+  return { block, missing, live: block && faqs.length > 0 && missing.length === 0, faqPages: n, sources, shownElsewhere };
 }
 /** Theme editor link that opens the product template with the RankPilot FAQ block ready to add. */
 export function faqBlockLink(shop: string, apiKey = process.env.SHOPIFY_API_KEY || "") {

@@ -1,3 +1,4 @@
+import { load } from "cheerio";
 /**
  * Release 22 (R22-502, R22-106): which fact may answer which FAQ question.
  *
@@ -105,4 +106,42 @@ export function correctedFaqs(saved: FaqItem[], facts: Record<string, { value: s
     fixed.push({ question: item.question, answer: item.answer, problems, ...(replacement ? { replacement } : {}) });
   }
   return { faqs: out, fixed };
+}
+
+/**
+ * Release 22 (R22-105): remove an FAQ section from a description once the RankPilot FAQ block shows the
+ * FAQs, so a page doesn't show them twice. Removes an "FAQ"/"Questions" heading and everything up to the
+ * next section heading, or question headings ("…?") with their answers when there is no FAQ heading.
+ */
+export function removeFaqSection(html: string): { html: string; removed: string[] } {
+  const $ = load(`<div id="rp-root">${html || ""}</div>`, null, false);
+  const root = $("#rp-root");
+  const removed: string[] = [];
+  const isHeading = (el: unknown) => /^h[1-6]$/i.test(((el as { name?: string })?.name) || "");
+  const text = (el: unknown) => $(el as never).text().replace(/\s+/g, " ").trim();
+  const faqHeading = root.children().toArray().find((el) => (isHeading(el) || /^(p|strong|b)$/i.test((el as { name: string }).name)) && /\b(faqs?|frequently asked|questions?)\b/i.test(text(el)) && !/\?$/.test(text(el)) && text(el).length < 80);
+  if (faqHeading) {
+    const level = isHeading(faqHeading) ? Number((faqHeading as { name: string }).name[1]) : 6;
+    removed.push(text(faqHeading));
+    let next = $(faqHeading).next();
+    $(faqHeading).remove();
+    while (next.length) {
+      const el = next.get(0)!;
+      if (isHeading(el) && Number((el as { name: string }).name[1]) <= level && !/\?$/.test(text(el))) break;
+      const after = next.next();
+      removed.push(text(el));
+      next.remove();
+      next = after;
+    }
+  } else {
+    for (const el of root.children().toArray()) {
+      if (!el.parent) continue;
+      if (!(isHeading(el) && /\?$/.test(text(el)))) continue;
+      removed.push(text(el));
+      let next = $(el).next();
+      $(el).remove();
+      while (next.length && !isHeading(next.get(0))) { const after = next.next(); removed.push(text(next.get(0))); next.remove(); next = after; }
+    }
+  }
+  return { html: root.html() || "", removed: removed.filter(Boolean) };
 }

@@ -17,7 +17,7 @@ import type { Issue, Payload, Facts } from "./types";
 import { settings } from "./types";
 import { actionGroups } from "./dashboard";
 import { findingName } from "./merchant-copy";
-import { approve, enqueue, log, tick, clientFor, verifyChange, assertSafeCopy, enqueueGeneration, proposeRedirect, sync, refreshCatalogueAudit } from "./service.server";
+import { approve, enqueue, log, tick, clientFor, verifyChange, assertSafeCopy, enqueueGeneration, proposeRedirect, sync, scheduleCatalogueRefresh } from "./service.server";
 import { fetchResource } from "./shopify-api.server";
 import { publicFetch, limitedText } from "./crawl.server";
 import { dismissChanges, settleStaleChanges } from "./history-hygiene.server";
@@ -179,6 +179,8 @@ export async function findings(storeId: string, group?: string) {
   const issues = await latestIssues(storeId);
   const resources = await prisma.resource.findMany({ where: { storeId }, select: { id: true, kind: true, handle: true, title: true } });
   const byId = new Map(resources.map((r) => [r.id, r]));
+  // Release 22 (R22-402, R22-701): the proposal already waiting for a finding, so agents don't duplicate it.
+  const pending = new Map((await prisma.change.findMany({ where: { storeId, status: "pending" }, orderBy: { createdAt: "asc" }, select: { id: true, resourceId: true, feature: true } })).map((c) => [`${c.resourceId}:${c.feature}`, c.id]));
   return actionGroups(issues)
     .filter((g) => !group || g.key === group || g.code === group)
     .map((g) => ({
@@ -196,6 +198,7 @@ export async function findings(storeId: string, group?: string) {
         link: i.link,
         // Release 20 (RP-604): the change behind a changed-outside finding, for POST keep-shopify.
         ...(i.changeId ? { changeId: i.changeId } : {}),
+        ...(i.feature && pending.get(`${i.resourceId}:${i.feature}`) ? { pendingChangeId: pending.get(`${i.resourceId}:${i.feature}`), status: "Proposal pending" } : {}),
       })),
     }));
 }
@@ -909,7 +912,7 @@ export async function keepShopifyVersion(storeId: string, input: unknown) {
   const rows = await prisma.change.findMany({ where: { storeId, id: { in: body.changeIds }, status: { in: ["applied", "rollback_failed"] } } });
   for (const r of rows) cfg = keepShopify(cfg, r.id);
   await prisma.store.update({ where: { id: storeId }, data: { settings: JSON.stringify(cfg) } });
-  await refreshCatalogueAudit(storeId);
+  await scheduleCatalogueRefresh(storeId);
   await log(storeId, "Agent kept Shopify's version", { count: rows.length, actor: AGENT_ACTOR });
   return { kept: rows.map((r) => r.id), notFound: body.changeIds.filter((id) => !rows.some((r) => r.id === id)) };
 }
@@ -919,7 +922,7 @@ export async function noBarcode(storeId: string, input: unknown) {
   const { noBarcodeFact } = await import("./finding-state");
   const rows = await prisma.resource.findMany({ where: { storeId, kind: "product", id: { in: body.ids } }, select: { id: true, facts: true } });
   for (const r of rows) { const facts = JSON.parse(r.facts || "{}"); if (body.undo) delete facts.barcode; else facts.barcode = noBarcodeFact(); await prisma.resource.update({ where: { id: r.id }, data: { facts: JSON.stringify(facts) } }); }
-  await refreshCatalogueAudit(storeId);
+  await scheduleCatalogueRefresh(storeId);
   await log(storeId, body.undo ? "Agent removed no-barcode confirmation" : "Agent confirmed no manufacturer barcode", { count: rows.length, actor: AGENT_ACTOR });
   return { updated: rows.map((r) => r.id), notFound: body.ids.filter((id) => !rows.some((r) => r.id === id)), undo: body.undo };
 }
@@ -947,7 +950,7 @@ export async function confirmFacts(storeId: string, input: unknown) {
     try { const confirmed = await confirmAllSpecs(storeId, i.resourceId, i.keys); results.push({ resourceId: i.resourceId, ok: true, confirmed, ...(confirmed ? {} : { status: "unchanged", message: "No change: no unconfirmed facts to confirm" }) }); }
     catch (e) { results.push({ resourceId: i.resourceId, ok: false, message: friendlyError(e) }); }
   }
-  await refreshCatalogueAudit(storeId);
+  await scheduleCatalogueRefresh(storeId);
   await log(storeId, "Agent confirmed facts", { count: results.length, actor: AGENT_ACTOR });
   return { results };
 }
