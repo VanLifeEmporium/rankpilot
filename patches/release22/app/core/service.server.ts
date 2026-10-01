@@ -97,7 +97,9 @@ export async function catalogueAuditPaged(storeId:string){
  const {resourcePages,AUDIT_SELECT,CATALOGUE_KINDS}=await import('./resource-pages.server');
  // Pass 1: shared FAQ questions and vendor spellings (only short strings are kept).
  const store=await prisma.store.findUnique({where:{id:storeId}});const cfg=settings(store?.settings||'{}');
- const prescan=createPrescan({storeName:JSON.parse(store?.discoveries||'{}').shop?.name||cfg.titleBrand||'',deliveryPolicy:!!(cfg.policies?.source&&cfg.policies?.delivery),capsAllowlist:cfg.capsAllowlist});
+ // Release 22 (R22-305, R22-401): brands in pending vendor proposals count as known brands.
+ const pendingBrands=(await prisma.change.findMany({where:{storeId,feature:'vendor',status:{in:['pending','approved','applying','verifying']}},select:{after:true}})).map(c=>{try{return String(JSON.parse(c.after));}catch{return '';}}).filter(Boolean);
+ const prescan=createPrescan({storeName:JSON.parse(store?.discoveries||'{}').shop?.name||cfg.titleBrand||'',deliveryPolicy:!!(cfg.policies?.source&&cfg.policies?.delivery),capsAllowlist:cfg.capsAllowlist,knownBrands:pendingBrands});
  for await(const page of resourcePages<AuditResource>({storeId,kind:'product'},{id:true,kind:true,payload:true,title:true}))prescan.add(page);
  // Pass 2: the checks.
  const auditor=createCatalogueAuditor(prescan.context());
@@ -108,6 +110,20 @@ export async function catalogueAuditPaged(storeId:string){
   for(const r of page){const p=JSON.parse(r.payload);slim.push({id:r.id,title:r.title,kind:r.kind,handle:r.handle,keyword:'',facts:'{}',payload:JSON.stringify({title:p.title,url:p.url,published:p.published,blogHandle:p.blogHandle,seo:{title:p.seo?.title||'',description:''},images:[],collections:[],descriptionHtml:''})});}
  }
  return {result:auditor.result(),count,slim};
+}
+/**
+ * Release 22 (R22-202): re-auditing the whole catalogue took about 1 s of CPU per write on a fast machine
+ * (several seconds on Render's shared CPU) and ran inside every apply and dashboard action. Writes now
+ * schedule one background refresh per 20-second window instead; it runs just after the window closes,
+ * so it includes every write made in it. Tests run it inline so their assertions stay deterministic.
+ */
+export const REFRESH_WINDOW_MS = 20000;
+export async function scheduleCatalogueRefresh(storeId:string,opts:{inline?:boolean;now?:number}={}){
+ if(opts.inline ?? !!process.env.VITEST)return refreshCatalogueAudit(storeId);
+ const now=opts.now??Date.now();const bucket=Math.floor(now/REFRESH_WINDOW_MS);
+ const job=await withDbRetry(()=>enqueue(storeId,'refresh-audit',{window:bucket},`window:${bucket}`));
+ await withDbRetry(()=>prisma.job.updateMany({where:{id:job.id,status:'queued'},data:{runAt:new Date((bucket+1)*REFRESH_WINDOW_MS+2000)}}));
+ return job;
 }
 export async function refreshCatalogueAudit(storeId:string) {
  const latest=await prisma.audit.findFirst({where:{storeId},orderBy:{createdAt:'desc'}});
@@ -371,7 +387,7 @@ export async function audit(storeId: string) {
   // Release 22 (R22-103): FAQs saved but not on the live page (block missing, or the theme changed).
   try {
     const faq = await import("./faq-live.server");
-    if (!store.demo) await faq.recheckFaqChanges(storeId);
+    if (!store.demo) result.issues.push(...(await faq.recheckFaqChanges(storeId)).duplicates);
     const issue = faq.faqNotLiveIssue(await faq.refreshFaqStatus(storeId));
     if (issue) result.issues.push(issue);
   } catch (e) { await log(storeId, "FAQ live check unavailable", { message: (e as Error).message }); }
@@ -531,7 +547,7 @@ export async function approve(storeId: string, id: string, actor: string, expect
   {const {brandGate,allowedCaps}=await import('./brand-rules');const r=await prisma.resource.findFirst({where:{id:row.resourceId,storeId},select:{facts:true,payload:true}});
    const st=await prisma.store.findUnique({where:{id:storeId},select:{settings:true,discoveries:true}});const pv=(()=>{try{return JSON.parse(r?.payload||'{}');}catch{return {};}})();
    const {productBrands,storeNames}=await import('./brand-detect');
-   const problems=brandGate(row.feature,JSON.parse(row.before),JSON.parse(row.after),JSON.parse(r?.facts||'{}'),{allow:allowedCaps(pv.vendor,pv.title,settings(st?.settings||'{}').capsAllowlist),brands:pv.title?productBrands(pv,storeNames(st)):[],productTitle:pv.title,storeNames:storeNames(st)});
+   const problems=brandGate(row.feature,JSON.parse(row.before),JSON.parse(row.after),JSON.parse(r?.facts||'{}'),{allow:allowedCaps(pv.vendor,pv.title,settings(st?.settings||'{}').capsAllowlist),brands:pv.title?productBrands(pv,storeNames(st)):[],productTitle:pv.title,storeNames:storeNames(st),allowCut:JSON.parse(row.reasons).some((r:string)=>/Removes the description FAQ section/.test(r))});
    if(problems.length)throw new Error(`This change breaks the store's content rules: ${problems.join('; ')}. Edit the wording, then approve.`);}
   if (row.status !== "pending")
     throw new Error("This change is no longer awaiting approval");
@@ -673,7 +689,7 @@ export async function applyChange(
       },
     }),
   ]));
-  await refreshCatalogueAudit(storeId);
+  await scheduleCatalogueRefresh(storeId);
   if(!rollback)await scheduleIndexRecheck(storeId,r);
   // Release 22 (R22-104): an FAQ is only "Verified" once it is in the live page HTML.
   if(!rollback&&change.feature==='faq'&&client){const {queueFaqLiveCheck}=await import('./faq-live.server');await queueFaqLiveCheck(storeId,id);}
@@ -725,7 +741,7 @@ export async function verifyChange(storeId:string,id:string) {
   prisma.change.update({where:{id},data:{status:'applied',appliedAt:change.appliedAt || new Date(),error:null}}),
   prisma.job.updateMany({where:{storeId,kind:'apply',dedup:`${storeId}:apply:${id}`,status:{in:['failed','queued']}},data:{status:'completed',error:null,lockedAt:null}})
  ]);
- await refreshCatalogueAudit(storeId);
+ await scheduleCatalogueRefresh(storeId);
  await scheduleIndexRecheck(storeId,resource);
  await log(storeId,'Live Shopify value verified',{changeId:id});
  return {ok:true,message:'Verified against live Shopify. The accepted value is saved; no additional write was made.'};

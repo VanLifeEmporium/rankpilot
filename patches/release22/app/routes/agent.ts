@@ -38,7 +38,7 @@ ${groups.map((g) => `<h3>${esc(g.name)} — ${g.pages} pages <small>(key: ${esc(
 <h2>API</h2>
 <p>Writes are dry runs by default ("dryRun":false to save) and arrive as pending proposals for the merchant unless you send "apply":true. Brand rules and claim checks apply: no "!", sales phrases, capitals for emphasis, 【】, imperial units, invented ratings, certifications, waterproof ratings, barcodes, prices or marketplace links unless they are confirmed facts. Batches return within about 10 seconds; poll GET changes?ids= for anything still applying.</p>
 <pre>GET  /api/agent/overview                      store, audit (catalogue checks, answer readiness), Store Score, change counts
-GET  /api/agent/findings?group=KEY            open findings by group (snoozed, accepted and unpublished-page findings are left out); changed-outside items carry changeId
+GET  /api/agent/findings?group=KEY            open findings by group (snoozed, accepted and unpublished-page findings are left out); changed-outside items carry changeId; items with a proposal already waiting carry pendingChangeId and status "Proposal pending"
 GET  /api/agent/pages?kind=product&amp;limit=50&amp;offset=0   {total, offset, limit, hasMore, items}
 GET  /api/agent/pages?ids=a,b&amp;full=1          adds html, variants (sku, barcode, price), productFields, confirmedFacts, faqs
 GET  /api/agent/changes?status=pending|verified&amp;actor=claude-agent&amp;ids=a,b&amp;limit=100   latest first, as a list
@@ -55,7 +55,7 @@ POST /api/agent/seo            {"items":[{"resourceId","title","description"}], 
 POST /api/agent/description    {"items":[{"resourceId","html"}], "dryRun", "apply"}   max 10; articles and pages keep their own layout markup
 POST /api/agent/faq            {"items":[{"resourceId","faqs":[{"question","answer"}]}], "dryRun", "apply"}   max 5
 POST /api/agent/product        {"items":[{"resourceId","title"?,"vendor"?}], "dryRun", "apply"}   max 10; a new title must keep the brand
-POST /api/agent/brands         {"ids"?:[...], "minConfidence"?:"high"}   pending vendor changes from brand-is-store findings, with evidence and smart-collection warnings
+POST /api/agent/brands         {"ids"?:[...], "minConfidence"?:"high"}   pending vendor changes from brand-is-store findings, with evidence and smart-collection warnings; a product with a proposal already waiting returns status "exists" (never a duplicate). Medium confidence = possible brand to check
 POST /api/agent/book           {"resourceId","isbn","publisher","editionConfirmed":true}   pending vendor (publisher) and barcode (ISBN) changes
 POST /api/agent/headings       {"ids":[...], "dryRun", "apply"}   max 25
 POST /api/agent/clean-formatting {"ids":[...], "dryRun", "apply"}   max 20

@@ -58,12 +58,18 @@ export async function runFaqLiveJob(storeId: string, payload: { changeId: string
 export async function recheckFaqChanges(storeId: string, fetcher?: Fetcher | null) {
   const rows = await prisma.change.findMany({ where: { storeId, feature: "faq", status: "applied" }, orderBy: { appliedAt: "desc" }, select: { id: true, resourceId: true } });
   const seen = new Set<string>();
-  const out = { live: 0, notLive: 0 };
+  const out: { live: number; notLive: number; duplicates: Issue[] } = { live: 0, notLive: 0, duplicates: [] };
   for (const c of rows) {
     if (seen.has(c.resourceId)) continue;
     seen.add(c.resourceId);
     const r = await checkFaqChange(storeId, c.id, fetcher);
     if (r) r.live ? out.live++ : out.notLive++;
+    // R22-105: two FAQPage entities, or the questions shown again outside the block.
+    if (r && r.block && (r.faqPages > 1 || (r.shownElsewhere || 0) > 0)) {
+      const res = await prisma.resource.findUnique({ where: { id: c.resourceId }, select: { title: true } });
+      out.duplicates.push({ resourceId: c.resourceId, title: res?.title || "", code: "duplicate-faq-source", severity: "warning",
+        detail: [r.faqPages > 1 ? `The live page has ${r.faqPages} FAQPage entities (${r.sources.join(", ")}). Keep the RankPilot FAQ block's and remove the theme or app FAQ markup.` : "", (r.shownElsewhere || 0) > 0 ? `${r.shownElsewhere} RankPilot questions also appear outside the RankPilot FAQ block, for example from a Custom Liquid block reading the same FAQ field. Remove that block now the RankPilot FAQ block is on the template.` : ""].filter(Boolean).join(" ") });
+    }
   }
   return out;
 }

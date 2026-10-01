@@ -48,7 +48,7 @@ export function barcodeProblems(p:Payload):BarcodeProblem[]{
 // ---- R19-07: vendors ----
 const PLACEHOLDER=/^(n\/?a|none|unbranded|un-branded|no brand|generic|default|-|)$/i;
 export const vendorKey=(v:string)=>v.toLowerCase().replace(/&/g,' and ').replace(/\b(ltd|limited|uk|co|company|inc|llc|plc)\b/g,' ').replace(/[^a-z0-9]+/g,'');
-export type VendorContext={storeName:string;vendors:Map<string,Map<string,number>>};
+export type VendorContext={storeName:string;vendors:Map<string,Map<string,number>>;learnedBrands?:string[];knownBrands?:string[];handleLeads?:Map<string,number>};
 export function vendorProblems(p:Payload,ctx:VendorContext,facts:Facts={}):BarcodeProblem[]{
  const out:BarcodeProblem[]=[];const vendor=(p.vendor||'').trim();
  if(PLACEHOLDER.test(vendor)){out.push({code:'vendor-placeholder',severity:'warning',detail:`The vendor is “${vendor||'(blank)'}”. Set the real brand (the manufacturer, or ${ctx.storeName||'your store'} for own-label items) so Google Shopping shows it.`});return out;}
@@ -59,8 +59,10 @@ export function vendorProblems(p:Payload,ctx:VendorContext,facts:Facts={}):Barco
   if(isBook(p))out.push({code:'vendor-store-on-book',severity:'warning',detail:`This book lists ${vendor} as its brand. Use the publisher as the vendor. Open the book flow to find the publisher and ISBN.`});
   else if(!isOwnLabel(p,facts)){
    // Release 20 (RP-201): the real brand from the title, a Brand line or the handle, with its evidence.
-   const found=detectBrand(p,brandList([...ctx.vendors.values()].map(m=>[...m.keys()][0]),ctx.storeName));
-   if(found){const ev=found.evidence[0];out.push({code:'brand-is-store',severity:'warning',brand:found,detail:`The brand is ${vendor} (your store), but the ${ev.where} names ${found.vendor}: “${ev.text.slice(0,120)}”. Propose vendor “${found.vendor}” (${found.confidence} confidence) so Google Shopping and brand searches show the manufacturer. If this is your own label, tag the product “own-label”.`});}
+   const found=detectBrand(p,brandList([...[...ctx.vendors.values()].map(m=>[...m.keys()][0]),...(ctx.learnedBrands||[]),...(ctx.knownBrands||[])],ctx.storeName),{handleLeads:ctx.handleLeads});
+   // Release 22 (R22-401): medium confidence is a possible brand to check, not a confident proposal.
+   if(found&&found.confidence==='medium'){const ev=found.evidence[0];out.push({code:'brand-is-store',severity:'notice',brand:found,detail:`Possible brand: the ${ev.where} suggests “${found.vendor}” (“${ev.text.slice(0,120)}”), but it may be a product name. Check it, then propose vendor “${found.vendor}” or confirm the brand for every product that uses it.`});}
+   else if(found){const ev=found.evidence[0];out.push({code:'brand-is-store',severity:'warning',brand:found,detail:`The brand is ${vendor} (your store), but the ${ev.where} names ${found.vendor}: “${ev.text.slice(0,120)}”. Propose vendor “${found.vendor}” (${found.confidence} confidence) so Google Shopping and brand searches show the manufacturer. If this is your own label, tag the product “own-label”.`});}
   }
  }
  return out;
@@ -150,6 +152,28 @@ export const mentionsDelivery=(p:Payload)=>PATTERNS.delivery.test(shopperText(p)
 // ---- Release 20 (RP-401): the same sentence on many products ----
 const DELIVERY_BLOCK=/\b(?:delivery|delivered|dispatch(?:ed)?|shipping|postage|returns?|refunds?)\b/i;
 /** Sentences a shopper reads, with the product's own name replaced, skipping short shared delivery blocks. */
+/**
+ * Release 22 (R22-303): a sentence's pattern with the product's name taken out, so "What should I check
+ * before buying the Helinox Chair One?" and "… the Ultratape Gaffer Tape?" count as one template. A run of
+ * two or more title words (with any small words between them) becomes "<product name>".
+ */
+const SMALL=new Set(['the','a','an','and','of','for','with','in','on','to','by','&','-','–','|']);
+export function sentencePattern(sentence:string,title:string){
+ const words=new Set(title.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w=>w&&!SMALL.has(w)));
+ const tokens=sentence.split(/(\s+)/);
+ const isName=(t:string)=>{const w=t.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu,'');return !!w&&words.has(w);};
+ const out:string[]=[];
+ for(let i=0;i<tokens.length;){
+  if(/^\s+$/.test(tokens[i])||!isName(tokens[i])){out.push(tokens[i]);i++;continue;}
+  // Extend the run over name words and small words between them.
+  let j=i,last=i,names=0;
+  for(;j<tokens.length;j++){const t=tokens[j];if(/^\s+$/.test(t))continue;if(isName(t)){names++;last=j;continue;}if(SMALL.has(t.toLowerCase()))continue;break;}
+  if(names>=2||(names===1&&words.size===1)){const tail=tokens[last].match(/[^\p{L}\p{N}]+$/u)?.[0]||'';out.push('<product name>'+tail);i=last+1;}
+  else{out.push(tokens[i]);i++;}
+ }
+ const sample=out.join('');
+ return {key:normaliseQuestion(sample.replace(/<product name>/g,' productname '),''),sample};
+}
 export function contentUnits(p:Payload){
  const $=load(`<div>${p.descriptionHtml||''}</div>`,null,false);
  const out=new Map<string,string>();
@@ -161,7 +185,7 @@ export function contentUnits(p:Payload){
   if(words<40&&DELIVERY_BLOCK.test(block))return;
   for(const sentence of block.match(/[^.!?]+[.!?]?/g)||[]){
    const t=sentence.trim();if(t.split(/\s+/).length<5||t.length>200)continue;
-   const key=normaliseQuestion(t,p.title);if(key&&!out.has(key))out.set(key,p.title?t.split(p.title).join('<product>'):t);
+   const {key,sample}=sentencePattern(t,p.title||'');if(key&&!out.has(key))out.set(key,sample);
    if(out.size>=40)return false;
   }
  });

@@ -17,7 +17,7 @@ import prisma from "../db.server";
 import { context } from "./context.server";
 import { requireSameOrigin, encrypt, credentials } from "./security.server";
 import { features, settings } from "./types";
-import { propose, queueSavedChecks, verifyChange, enqueue, enqueueGeneration, approve, log, proposeRedirect, proposeLinkRemoval, tick, refreshCatalogueAudit, audit } from "./service.server";
+import { propose, queueSavedChecks, verifyChange, enqueue, enqueueGeneration, approve, log, proposeRedirect, proposeLinkRemoval, tick, scheduleCatalogueRefresh, audit } from "./service.server";
 import { auditCatalogue, extractFacts, keywordFor } from "./catalogue";
 import { cached, resourceFingerprint } from "./load-cache";
 import { faqBlockLink } from "./faq-live";
@@ -297,14 +297,14 @@ export async function actionUI(request: Request) {
         const change=await prisma.change.findFirstOrThrow({where:{id:value('changeId'),storeId:store.id,status:{in:['applied','rollback_failed']}}});
         await prisma.store.update({where:{id:store.id},data:{settings:JSON.stringify(keepShopify(settings(store.settings),change.id))}});
         await log(store.id,"Kept Shopify's version",{changeId:change.id,resourceId:change.resourceId,actor});
-        await refreshCatalogueAudit(store.id);
+        await scheduleCatalogueRefresh(store.id);
         return data({ok:true,message:"Recorded: Shopify's current value is kept. Nothing was written to Shopify; RankPilot's earlier change stays in history with its undo."});
       }
       case "proposeBrands": {
         // Release 20 (RP-201): pending vendor changes from brand-is-store findings (one product or all).
         const { proposeBrands } = await import("./brand-proposals.server");
         const ids = f.getAll("ids").map(String).filter(Boolean);
-        const { results } = await proposeBrands(store.id, { ids: ids.length ? ids : undefined, actor });
+        const { results } = await proposeBrands(store.id, { ids: ids.length ? ids : undefined, minConfidence: value("minConfidence") === "high" ? "high" : undefined, actor });
         const pending = results.filter((r) => r.status === "pending");
         const warned = results.filter((r) => r.warnings?.length);
         const failed = results.filter((r) => !r.ok);
@@ -329,6 +329,18 @@ export async function actionUI(request: Request) {
         await log(store.id, "Learned rules reset", { actor });
         return data({ ok: true, message: "Learned rules reset. RankPilot will learn again from your next decisions." });
       }
+      case "removeDescriptionFaq": {
+        // Release 22 (R22-105): a reviewed change that removes the description's FAQ section; the block keeps the FAQs.
+        const { removeFaqSection } = await import("./faq-facts");
+        const { stageChange } = await import("./agent.server");
+        const r = await prisma.resource.findFirstOrThrow({ where: { id: value("id"), storeId: store.id } });
+        const p = JSON.parse(r.payload);
+        const cut = removeFaqSection(p.descriptionHtml || "");
+        if (!cut.removed.length) return data({ ok: false, message: "No FAQ section was found in the description." });
+        const change = await stageChange(store.id, r.id, "description", p.descriptionHtml || "", cut.html, [`merchant-reviewed-v1: Removes the description FAQ section (${cut.removed.length} blocks, starting “${cut.removed[0].slice(0, 80)}”) because the RankPilot FAQ block shows the saved FAQs. Check the before and after, then approve.`]);
+        await log(store.id, "Description FAQ removal proposed", { resourceId: r.id, changeId: change.id, actor });
+        return data({ ok: true, changeId: change.id, message: "Removal prepared for review. Nothing changes in Shopify until you approve it." });
+      }
       case "reviewFaqs": {
         // Release 22 (R22-106): corrected FAQ lists as pending proposals; nothing is published until approved.
         const { reviewSavedFaqs, refreshFaqStatus } = await import("./faq-live.server");
@@ -343,7 +355,7 @@ export async function actionUI(request: Request) {
         const undo=value('undo')==='on';
         const rows=await prisma.resource.findMany({where:{storeId:store.id,kind:'product',id:{in:ids}}});
         for(const r of rows){const facts=JSON.parse(r.facts||'{}');if(undo)delete facts.barcode;else facts.barcode=noBarcodeFact();await prisma.resource.update({where:{id:r.id},data:{facts:JSON.stringify(facts)}});}
-        await refreshCatalogueAudit(store.id);
+        await scheduleCatalogueRefresh(store.id);
         await log(store.id,undo?'No-barcode confirmation removed':'Confirmed no manufacturer barcode',{count:rows.length,actor});
         return data({ok:true,message:undo?`Removed the confirmation for ${plural(rows.length,'product')}.`:`${plural(rows.length,'product')} confirmed as having no manufacturer barcode. They are no longer flagged for GTIN.`});
       }
@@ -585,7 +597,7 @@ export async function actionUI(request: Request) {
         const keys=intent==='confirmSpecs'?z.array(z.string()).min(1,'Tick the values you have checked.').parse(JSON.parse(value('keys')||'[]')):undefined;
         const n=intent==='confirmSpecs'?await confirmAllSpecs(store.id,value('id'),keys):await discardSpecs(store.id,value('id'));
         const replaced=n?(await prisma.change.updateMany({where:{storeId:store.id,resourceId:value('id'),status:'pending',feature:{in:['description','faq','seo','title']}},data:{status:'superseded'}})).count:0;
-        await refreshCatalogueAudit(store.id);
+        await scheduleCatalogueRefresh(store.id);
         await log(store.id,intent==='confirmSpecs'?'Product facts confirmed in bulk review':'Unconfirmed suggestions discarded',{resourceId:value('id'),count:n,actor});
         return data({ok:true,message:intent==='confirmSpecs'?`${plural(n,'fact')} confirmed.${replaced?` ${plural(replaced,'waiting proposal')} replaced; prepare ${replaced===1?'it':'them'} again to use the confirmed facts.`:''}`:`${plural(n,'suggestion')} discarded.`});
       }
@@ -602,7 +614,7 @@ export async function actionUI(request: Request) {
           for(const item of fresh)await tx.resource.update({where:{id:item.id},data:{facts:JSON.stringify(item.facts)}});
           return fresh.reduce((total,item)=>total+item.count,0);
         });
-        await refreshCatalogueAudit(store.id);
+        await scheduleCatalogueRefresh(store.id);
         await log(store.id,'Unconfirmed sourced facts imported',{count,actor});
         return data({ok:true,message:`Imported ${count} unconfirmed facts. Open Product details to check sources and confirm accurate values. No Shopify content was changed.`});
       }
@@ -649,7 +661,7 @@ export async function actionUI(request: Request) {
           },
           data: { status: "superseded" },
         });
-        await refreshCatalogueAudit(store.id);
+        await scheduleCatalogueRefresh(store.id);
         await log(store.id, "Product facts updated", {
           resourceId: r.id,
           actor,
