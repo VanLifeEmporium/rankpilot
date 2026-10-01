@@ -1,7 +1,7 @@
 import {plural} from './plural';
 import type {Feature,Issue} from './types';
 import {saveSupplierOriginals,proposeCleanFormatting} from './supplier-copy.server';
-import {splitUnpublished,applyFindingState,snooze,unsnooze,keepShopify,noBarcodeFact} from './finding-state';
+import {splitUnpublished,splitInProgress,applyFindingState,snooze,unsnooze,keepShopify,noBarcodeFact} from './finding-state';
 import {indexSummary} from './index-summary';
 import {collectionCopy} from './suggestions.server';
 import {parseReportedUrls} from './technical-audit';
@@ -106,6 +106,10 @@ export async function loadUI(request: Request) {
   }));
   const findingState = audits[0] ? applyFindingState(jsonList(audits[0].issues) as Issue[], cfg) : null;
   const findingSplit = findingState ? splitUnpublished(findingState.active) : null;
+  // Release 22 (R22-701): findings with a proposal or redirect already waiting are shown as in progress, not open.
+  const progressSplit = findingSplit ? splitInProgress(findingSplit.live,
+    await prisma.change.findMany({where:{storeId:store.id,status:{in:["pending","approved","applying","verifying"]}},select:{id:true,resourceId:true,feature:true,status:true}}),
+    await prisma.resource.findMany({where:{storeId:store.id,kind:"redirect"},select:{id:true,handle:true}})) : null;
   // Only Settings shows learned rules; only the Dashboard and Results & history use not-live paths.
   const learned = section === "settings" ? await import("./learned-rules.server").then(m=>m.learnedRules(store.id)).then(r=>r.rules).catch(()=>[]) : [];
   const gsc = ["app", "reports"].includes(section || "") ? metrics.find(m=>m.provider==="gsc") : undefined;
@@ -179,11 +183,12 @@ export async function loadUI(request: Request) {
     observations,
     metrics:compactMetrics(metrics).map(m=>m.provider==='indexation'?{...m,payload:JSON.stringify(indexSummary(m.payload))}:m),
     reports,
-    audits:audits.map((a,index)=>index>0?{...a,issues:'[]',coverage:'{}'}:({...a,issues:JSON.stringify((findingSplit?.live||[]).filter(i=>!i||typeof i!=='object'||!('code' in i)||i.code!=='reported-404'||('resourceId' in i&&(cfg.reportedPaths||[]).some(p=>i.resourceId==='reported:'+p)))),coverage:JSON.stringify(jsonObject(a.coverage))})),
+    audits:audits.map((a,index)=>index>0?{...a,issues:'[]',coverage:'{}'}:({...a,issues:JSON.stringify((progressSplit?.open||[]).filter(i=>!i||typeof i!=='object'||!('code' in i)||i.code!=='reported-404'||('resourceId' in i&&(cfg.reportedPaths||[]).some(p=>i.resourceId==='reported:'+p)))),coverage:JSON.stringify(jsonObject(a.coverage))})),
     credentialNames: Object.keys(keys).filter((k) => Boolean(keys[k])),
     // Release 18: findings hidden until a date, listed so they can be brought back.
     // Release 20 (RP-301): findings on unpublished pages, shown under "Unpublished pages".
     unpublishedIssues: findingSplit?.unpublished||[],
+    inProgressIssues: progressSplit?.inProgress||[],
     // Release 20 (RP-303): Search Console pages that are not live (404, unpublished, noindex, redirected).
     // Release 20 (RP-403): rules learned from rejected proposals, shown in Settings with a reset.
     learned,
@@ -311,6 +316,31 @@ export async function actionUI(request: Request) {
         if (!results.length) return data({ ok: false, message: "No products with a detected brand. Run a fresh audit first." });
         return data({ ok: !failed.length || pending.length > 0, changeId: pending.length === 1 ? pending[0].changeId : undefined,
           message: `${plural(pending.length, "brand change")} ready for review.${warned.length ? ` ${warned.length} affect smart collections: ${warned[0].warnings![0]}` : ""}${failed.length ? ` ${failed.length} not prepared: ${failed[0].message}` : ""}${results.length - pending.length - failed.length ? ` ${results.length - pending.length - failed.length} unchanged.` : ""}` });
+      }
+      case "rewriteTemplate": {
+        // Release 22 (R22-603): the next 25 pages with a repeated template, most-viewed first, as reviewed changes.
+        const { rewriteTemplateBatch } = await import("./template-rewrite.server");
+        const sample = value("template");
+        if (!sample) return data({ ok: false, message: "Run a fresh audit first, then open the repeated text finding again." });
+        const r = await rewriteTemplateBatch(store.id, { sample, actor });
+        const ready = r.items.filter((i) => i.changeId);
+        const removedOnly = r.items.filter((i) => i.status === "removed-only").length;
+        const failed = r.items.filter((i) => i.status === "error" || i.status === "skipped");
+        await scheduleCatalogueRefresh(store.id);
+        return data({ ok: ready.length > 0, changeId: ready.length === 1 ? ready[0].changeId : undefined,
+          message: ready.length ? `${plural(ready.length, "product-specific rewrite")} ready for review, most-viewed pages first. Each quotes the fact it used${removedOnly ? `; ${removedOnly} only remove the repeated text because the page has no usable fact` : ""}. ${r.remaining ? `${r.remaining} more pages remain: run it again for the next 25.` : "No more pages remain."}${failed.length ? ` ${failed.length} need a manual edit: ${failed[0].message}` : ""}`
+            : `No new pages to rewrite. ${r.inReview} already have a change waiting for review.` });
+      }
+      case "republish": {
+        // Release 22 (R22-604): one click republishes an unpublished page or blog post; logged and undoable.
+        const { stageChange } = await import("./agent.server");
+        const r = await prisma.resource.findFirstOrThrow({ where: { id: value("id"), storeId: store.id } });
+        const p = JSON.parse(r.payload);
+        if (!["page", "article"].includes(r.kind)) return data({ ok: false, message: "Republish products in Shopify admin (Products › Sales channels › Online Store), or redirect the address instead." });
+        if (p.published !== false) return data({ ok: false, message: "This page is already published. Run a fresh audit to update the finding." });
+        const change = await stageChange(store.id, r.id, "published", false, true, ["merchant-reviewed-v1: Republish this page because Google still shows it. Check any dated details in the finding first.", "Undo in Results & history unpublishes it again."]);
+        await log(store.id, "Republish requested", { resourceId: r.id, changeId: change.id, actor });
+        return applyAccepted(change.id);
       }
       case "confirmBrand": {
         // Release 22 (R22-403): confirm a brand once; vendor proposals for every product that names it.

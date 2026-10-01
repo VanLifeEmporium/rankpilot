@@ -1,6 +1,6 @@
 import prisma from '../db.server';
 import {livenessIndex,normalisePath} from './page-liveness';
-import {deadPageIssue,redirectSuggestion,type DeadPage,type RetiredPage} from './index-hygiene';
+import {deadPageIssue,redirectSuggestion,datedFacts,type DeadPage,type RetiredPage} from './index-hygiene';
 import type {Issue} from './types';
 /** Release 20 (RP-302): Search Console pages with impressions that return 404 or are unpublished. */
 export async function deadPagesWithImpressions(storeId:string,opts:{confirm?:(url:string)=>Promise<number|null>}={}):Promise<Issue[]>{
@@ -30,7 +30,9 @@ export async function deadPagesWithImpressions(storeId:string,opts:{confirm?:(ur
   const own=state.resourceId?slim.find(r=>r.id===state.resourceId):undefined;
   // Release 22 (R22-501): a deleted product's type comes from the record kept when it was removed.
   const gone=retired.find(x=>x.path===normalisePath(e.url));
-  const dead:DeadPage={url:e.url,impressions:e.impressions,queries:[...e.queries].sort((a,b)=>b[1]-a[1]).map(([q])=>q).slice(0,5),reason,resourceId:state.resourceId,productType:own?.productType||gone?.productType};
+  // Release 22 (R22-604): an unpublished guide notes the dated details to check before republishing.
+  const body=reason==='unpublished'&&own?(()=>{try{return String(JSON.parse(resources.find(r=>r.id===own.id)!.payload).descriptionHtml||'').replace(/<[^>]+>/g,' ');}catch{return '';}})():'';
+  const dead:DeadPage={url:e.url,impressions:e.impressions,queries:[...e.queries].sort((a,b)=>b[1]-a[1]).map(([q])=>q).slice(0,5),reason,resourceId:state.resourceId,productType:own?.productType||gone?.productType,kind:own?.kind,...(body?{dated:datedFacts(body)}:{})};
   out.push(deadPageIssue(dead,redirectSuggestion(dead,candidates)));
  }
  return out;

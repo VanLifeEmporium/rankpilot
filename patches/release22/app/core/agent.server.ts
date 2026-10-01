@@ -180,13 +180,17 @@ export async function findings(storeId: string, group?: string) {
   const resources = await prisma.resource.findMany({ where: { storeId }, select: { id: true, kind: true, handle: true, title: true } });
   const byId = new Map(resources.map((r) => [r.id, r]));
   // Release 22 (R22-402, R22-701): the proposal already waiting for a finding, so agents don't duplicate it.
-  const pending = new Map((await prisma.change.findMany({ where: { storeId, status: "pending" }, orderBy: { createdAt: "asc" }, select: { id: true, resourceId: true, feature: true } })).map((c) => [`${c.resourceId}:${c.feature}`, c.id]));
+  const { splitInProgress, findingKey } = await import("./finding-state");
+  const split = splitInProgress(issues, await prisma.change.findMany({ where: { storeId, status: { in: ["pending", "approved", "applying", "verifying"] } }, orderBy: { createdAt: "asc" }, select: { id: true, resourceId: true, feature: true, status: true } }), resources.filter((r) => r.kind === "redirect"));
+  const pending = new Map(split.inProgress.map((i) => [findingKey(i), i.pending]));
   return actionGroups(issues)
     .filter((g) => !group || g.key === group || g.code === group)
     .map((g) => ({
       key: g.key,
       name: findingName(g.code),
       pages: g.count,
+      // Release 22 (R22-701): pages with nothing waiting; in-progress items carry status and pendingChangeId.
+      openPages: new Set(g.items.filter((i) => !pending.has(findingKey(i))).map((i) => i.resourceId)).size,
       items: g.items.map((i) => ({
         resourceId: i.resourceId,
         kind: byId.get(i.resourceId)?.kind,
@@ -198,7 +202,8 @@ export async function findings(storeId: string, group?: string) {
         link: i.link,
         // Release 20 (RP-604): the change behind a changed-outside finding, for POST keep-shopify.
         ...(i.changeId ? { changeId: i.changeId } : {}),
-        ...(i.feature && pending.get(`${i.resourceId}:${i.feature}`) ? { pendingChangeId: pending.get(`${i.resourceId}:${i.feature}`), status: "Proposal pending" } : {}),
+        ...(i.template ? { template: i.template } : {}),
+        ...(pending.get(findingKey(i)) ? { pendingChangeId: pending.get(findingKey(i))!.changeId, status: pending.get(findingKey(i))!.label } : {}),
       })),
     }));
 }

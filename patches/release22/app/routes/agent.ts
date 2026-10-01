@@ -34,16 +34,17 @@ export async function loader({ request }: LoaderFunctionArgs) {
 <p>Session active for up to 2 hours. All writes are logged, verified in Shopify and can be undone in Results &amp; history.</p>
 <h2>Change counts</h2><ul>${Object.entries(o.changes).map(([k, v]) => `<li>${esc(k)}: ${esc(v)}</li>`).join("")}</ul>
 <h2>Open findings</h2>
-${groups.map((g) => `<h3>${esc(g.name)} — ${g.pages} pages <small>(key: ${esc(g.key)})</small></h3><ul>${g.items.slice(0, 200).map((i) => `<li>${esc(i.title)} · <code>${esc(i.resourceId)}</code> · ${esc(i.kind)} · ${esc(i.code)} · ${esc(i.detail)}</li>`).join("")}</ul>`).join("")}
+${groups.map((g) => `<h3>${esc(g.name)} — ${g.openPages} open of ${g.pages} pages <small>(key: ${esc(g.key)})</small></h3><ul>${g.items.slice(0, 200).map((i) => `<li>${esc(i.title)} · <code>${esc(i.resourceId)}</code> · ${esc(i.kind)} · ${esc(i.code)}${"status" in i && i.status ? ` · <strong>${esc(i.status)}</strong>` : ""} · ${esc(i.detail)}</li>`).join("")}</ul>`).join("")}
 <h2>API</h2>
 <p>Writes are dry runs by default ("dryRun":false to save) and arrive as pending proposals for the merchant unless you send "apply":true. Brand rules and claim checks apply: no "!", sales phrases, capitals for emphasis, 【】, imperial units, invented ratings, certifications, waterproof ratings, barcodes, prices or marketplace links unless they are confirmed facts. Batches return within about 10 seconds; poll GET changes?ids= for anything still applying.</p>
 <pre>GET  /api/agent/overview                      store, audit (catalogue checks, answer readiness), Store Score, change counts
-GET  /api/agent/findings?group=KEY            open findings by group (snoozed, accepted and unpublished-page findings are left out); changed-outside items carry changeId; items with a proposal already waiting carry pendingChangeId and status "Proposal pending"
+GET  /api/agent/findings?group=KEY            open findings by group (snoozed, accepted and unpublished-page findings are left out); changed-outside items carry changeId; items with a proposal or redirect already waiting carry pendingChangeId and status "Proposal pending" or "Redirect pending" (in progress, not open: each group's openPages leaves them out); repeated-template items carry template (use with POST template-rewrite)
 GET  /api/agent/pages?kind=product&amp;limit=50&amp;offset=0   {total, offset, limit, hasMore, items}
 GET  /api/agent/pages?ids=a,b&amp;full=1          adds html, variants (sku, barcode, price), productFields, confirmedFacts, faqs
 GET  /api/agent/changes?status=pending|verified&amp;actor=claude-agent&amp;ids=a,b&amp;limit=100   latest first, as a list
 GET  /api/agent/changes … FAQ changes carry "live": true when the questions are in the live page HTML, false when "Saved, not live" (verified is then false)
 GET  /api/agent/changes?resourceId=a,b&amp;offset=0&amp;limit=100   one page's changes, paged: {total, offset, limit, hasMore, items}
+GET  /api/agent/changes … feature "published" (release 22) is a page or blog post republished from an unpublished-with-impressions finding; undo unpublishes it again. GET /api/agent/book candidates are also saved with the ISBN suggestion (facts.isbn.options: isbn, publisher, year, author, cover)
 GET  /api/agent/jobs · /api/agent/settings
 GET  /api/agent/lookup?paths=/pages/faq,https://shop/products/x
 GET  /api/agent/opportunities?limit=25        live, published, indexable pages at Google positions 8–20; "excluded" lists the rest with a reason
@@ -57,6 +58,7 @@ POST /api/agent/faq            {"items":[{"resourceId","faqs":[{"question","answ
 POST /api/agent/product        {"items":[{"resourceId","title"?,"vendor"?}], "dryRun", "apply"}   max 10; a new title must keep the brand
 POST /api/agent/brands         {"ids"?:[...], "minConfidence"?:"high"}   pending vendor changes from brand-is-store findings, with evidence and smart-collection warnings; a product with a proposal already waiting returns status "exists" (never a duplicate). Medium confidence = possible brand to check
 POST /api/agent/confirm-brand  {"brand":"Polarbox"}                  confirm a brand once: it is remembered (matched like a listed brand from the next audit) and every product that names it but lists the store or no brand as vendor gets a pending vendor change, with smart-collection warnings. Returns {brand, results}
+POST /api/agent/template-rewrite {"template":"What should I check before buying the <product name>?","size"?:25}   rewrites a repeated-template finding (its "template" field) on the next 25 pages, most Google impressions first. Each pending description change quotes the fact it used; a page with no usable fact only has the repeated text removed (status "removed-only"). Returns {total, inReview, remaining, items}
 POST /api/agent/book           {"resourceId","isbn","publisher","editionConfirmed":true}   pending vendor (publisher) and barcode (ISBN) changes
 POST /api/agent/headings       {"ids":[...], "dryRun", "apply"}   max 25
 POST /api/agent/clean-formatting {"ids":[...], "dryRun", "apply"}   max 20

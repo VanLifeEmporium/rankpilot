@@ -261,3 +261,82 @@ On a brand finding, "Confirm “Polarbox” for every product that names it" doe
 3. It shows smart-collection warnings in the result and in each change, before anything is approved.
 
 Confirming again creates no duplicates. The same action is available to the agent as `POST /api/agent/confirm-brand`.
+
+## Sprint 4: bulk content and polish
+
+Release marker: `2026-10-01-release-22`.
+
+### R22-204 Alerts for restarts and server errors
+
+The process that starts the web app and the worker (`scripts/start.mjs`) now watches both:
+
+- **Server errors.** More than 3 responses with a 5xx status within 5 minutes raises one alert. The alert lists the failing routes with their counts and the first and latest times. It then waits 15 minutes before alerting again.
+- **Restarts outside a deploy.** A small state file next to the database (`/data/rankpilot-monitor.json`) records the code version, the last time the app was seen running and the last 30 log lines (health checks left out). Three cases raise an alert, with the time and the last log lines:
+  - a web or worker process stops on its own, for example a crash or running out of memory: the alert goes out straight away;
+  - the app starts after a stop that wasn't a normal shutdown;
+  - the app restarts with the same code. A manual redeploy of the same commit is reported too, and labelled as such.
+
+  A normal deploy (new commit, clean shutdown) raises nothing.
+
+**Where alerts go:**
+
+- Always: an error-level log line starting `RankPilot ALERT`.
+- To get them on your phone or in chat, set **`ALERT_WEBHOOK_URL`** in the Render environment to a Slack, Discord or Teams incoming webhook, or any URL that accepts a JSON POST. The body has `text` (Slack), `content` (Discord) and the full `alert`.
+
+Until that variable is set, alerts only appear in the Render logs.
+
+Checked locally against the production build: a killed worker sent an alert to a test webhook, with the cause and the last log lines. The restart after it didn't send a second one. A same-code restart was reported, and a new-commit start was not.
+
+### R22-306 Index coverage smoothed
+
+Each Google index check keeps its result. The Store Score's "Inspected Google index coverage" uses the average of the last 3 checks. For example, 70% then 60% gives 65%, not a 10-point drop. The label shows how many pages were inspected, for example "(20 pages inspected, average of the last 3 checks)".
+
+### R22-603 Rewrite a repeated template in reviewed batches
+
+On a "Same text on many products" finding, **"Rewrite on the next 25 pages (most-viewed first)"** prepares a product-specific replacement for each page:
+
+- A template question ("What should I check before buying the <product name>?") and its answer paragraph are replaced by a question this product's facts answer, with the fact as the answer. For example, "How big is it? 52 x 50 x 66 cm" or "How much weight does it hold? 145 kg". Every answer passes the R22-502 rules.
+- Each change quotes the fact it used and its source, and says how many Google impressions the page had.
+- A page with no usable fact only has the template text removed, and the change says so. Nothing is made up.
+- Pages Google shows most come first.
+- Running it again moves on to the next 25. Pages with a description change already waiting are skipped.
+
+Nothing is published until you approve each change, and every change can be undone in Results & history. The agent can do the same with `POST /api/agent/template-rewrite`.
+
+### R22-604 Unpublished guides that still get impressions
+
+The finding offers two one-click fixes:
+
+- **Republish:** for pages and blog posts. It is logged and undoable: undo unpublishes the page again. Products are republished in Shopify admin, because RankPilot doesn't request the publications permission.
+- **Redirect to the closest live guide:** a dead blog post or page is now matched against live guides and collections.
+
+The finding also lists details that may have gone out of date while the page was unpublished, to check before republishing: past years, prices, opening times, "currently".
+
+### R22-701 Findings in progress
+
+A finding with a matching change already waiting is shown under **In progress**, not with the open findings:
+
+- **Redirect pending**, for a 404 or unpublished page with a redirect waiting;
+- **Proposal pending**, for any other change waiting.
+
+Each row has Approve, Reject and Review buttons. These findings are left out of the open findings count. In the agent API, items carry `status` and `pendingChangeId`, and each group has `openPages`.
+
+### R22-702 Book screen
+
+"Find publisher and ISBN" now shows the product photo next to each matching edition's cover. Each edition has its author, publisher, year and ISBN, and a "Use this edition" button. Saving still needs the "This is the edition I sell" box ticked, and then creates pending vendor and barcode changes.
+
+### R22-703 Redirected pages
+
+When a page's address redirects elsewhere, only its "Page address redirects elsewhere" finding is kept. Thin content and other findings for that page are dropped.
+
+## Comparing with the 1 October review
+
+| Measure | 1 Oct review | After release 22 |
+|---|---|---|
+| Saved FAQs on the live page | 0 of 17 | Checked on every audit. They show once the RankPilot FAQ block is added (theme step above), after the corrected answers are reviewed. |
+| Saved FAQ answers that use the wrong fact | "204 kg" found | All saved answers are re-checked; wrong ones become pending corrections. New suggestions use one rule set. |
+| Database busy or 5xx during a review | 9 | Cause reproduced and fixed (R22-200). WAL is on in production for both processes. Retries cover the rest, and 5xx bursts now alert. |
+| Single write, 95th percentile | Up to 20 s | Re-audit moved out of the write: about 60 ms locally, plus Shopify's own write and read-back. |
+| Store-branded products (brands found) | 263 | 52 of 53 branded products, 36 of 37 brands, with no wrong high-confidence proposals. Confirm-brand-once covers the rest in one click per brand. |
+
+The review score itself needs a fresh store audit and review on the live app. Run an audit after this deploy and after adding the FAQ block.

@@ -388,7 +388,7 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
   for (const [k, sample] of ctx.templateSentences || []) {
     const ids = templateHits.get(k) || [];
     if (!ids.length) continue;
-    answerIssues.push({ resourceId: `template:${++t}`, title: "Same text on many products", code: "repeated-template", severity: "notice", count: ids.length, resourceIds: ids.slice(0, TEMPLATE_ID_LIMIT),
+    answerIssues.push({ resourceId: `template:${++t}`, title: "Same text on many products", code: "repeated-template", severity: "notice", count: ids.length, resourceIds: ids.slice(0, TEMPLATE_ID_LIMIT), template: sample,
       detail: `“${sample}” appears on ${ids.length} of ${ctx.productCount || ids.length} products. Replace it with detail specific to each product, or remove it: shoppers and AI answers skip text that is the same everywhere.` });
   }
   // Delivery: answered for the store when the delivery policy is set, or a delivery line is shared by most products.

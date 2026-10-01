@@ -82,6 +82,12 @@ export async function action({ request, params }: ActionFunctionArgs) {
         return json(await proposeBrands(store.id, { ...b, actor: AGENT_ACTOR }));
       }
       // Release 22 (R22-403): confirm a brand once; pending vendor changes for every product that names it.
+      // Release 22 (R22-603): rewrite a repeated template on the next 25 pages (most-viewed first) as pending changes.
+      case "template-rewrite": {
+        const { rewriteTemplateBatch } = await import("../core/template-rewrite.server");
+        const b = z.object({ template: z.string().min(5).max(400), size: z.number().int().min(1).max(25).optional() }).parse(body);
+        return json(await rewriteTemplateBatch(store.id, { sample: b.template, size: b.size, actor: AGENT_ACTOR }));
+      }
       case "confirm-brand": {
         const b = z.object({ brand: z.string().min(2).max(60) }).parse(body);
         return json(await confirmBrand(store.id, { ...b, actor: AGENT_ACTOR }));
