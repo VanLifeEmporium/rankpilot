@@ -101,9 +101,9 @@ export type AuditResource = {
   keyword: string;
   facts: string;
 };
-export type AuditContext = { templateQuestions: Set<string>; vendors: VendorContext["vendors"]; storeName: string; deliveryPolicy: boolean; sharedDelivery?: boolean; capsAllowlist?: string[]; knownBrands?: string[]; learnedBrands?: string[]; handleLeads?: Map<string, number>; templateSentences?: Map<string, string>; productCount?: number };
+export type AuditContext = { templateQuestions: Set<string>; vendors: VendorContext["vendors"]; storeName: string; deliveryPolicy: boolean; sharedDelivery?: boolean; capsAllowlist?: string[]; knownBrands?: string[]; learnedBrands?: string[]; handleLeads?: Map<string, number>; templateSentences?: Map<string, string>; productCount?: number; faqNotLive?: Set<string>; faqAllNotLive?: boolean };
 /** Release 19: first pass over the catalogue — shared FAQ questions and vendor spellings. */
-export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boolean; capsAllowlist?: string[]; knownBrands?: string[] } = {}) {
+export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boolean; capsAllowlist?: string[]; knownBrands?: string[]; faqNotLive?: Set<string>; faqAllNotLive?: boolean } = {}) {
   const questions = new Map<string, number>();
   const storeTitles: string[] = [];
   const handleLeads = new Map<string, number>();
@@ -137,7 +137,7 @@ export function createPrescan(opts: { storeName?: string; deliveryPolicy?: boole
       // A delivery line on most products is a shared, store-level answer.
       const learnedBrands = learnTitleBrands(storeTitles);
       const knownBrands = [...new Set([...brandList([...vendors.values()].map((m) => [...m.keys()][0]), opts.storeName || ""), ...learnedBrands, ...(opts.knownBrands || [])])];
-      return { templateQuestions, templateSentences, productCount: products, vendors, learnedBrands, knownBrands, handleLeads, capsAllowlist: opts.capsAllowlist || [], storeName: opts.storeName || "", deliveryPolicy: !!opts.deliveryPolicy, sharedDelivery: products > 0 && withDelivery / products >= 0.5 };
+      return { templateQuestions, templateSentences, productCount: products, vendors, learnedBrands, knownBrands, handleLeads, capsAllowlist: opts.capsAllowlist || [], storeName: opts.storeName || "", deliveryPolicy: !!opts.deliveryPolicy, faqNotLive: opts.faqNotLive, faqAllNotLive: opts.faqAllNotLive, sharedDelivery: products > 0 && withDelivery / products >= 0.5 };
     },
   };
 }
@@ -354,7 +354,7 @@ export function createCatalogueAuditor(ctx: AuditContext = { templateQuestions: 
       for (const b of [...barcodeProblems(p), ...vendorProblems(p, ctx, f)]) { add(b.code, b.severity, b.detail, b.brand ? "vendor" : undefined); if (b.brand) issues[issues.length - 1].brand = b.brand; }
       if (!unpublished) {
       products_++;
-      const answered = answeredQuestions(p, f, { deliveryPolicy: ctx.deliveryPolicy });
+      const answered = answeredQuestions(p, f, { deliveryPolicy: ctx.deliveryPolicy, faqLive: !ctx.faqAllNotLive && !ctx.faqNotLive?.has(r.id) });
       // Release 20 (RP-104): only the questions that apply to this product type; delivery is store-level.
       const relevant = relevantQuestions(p);
       askedTotal += relevant.length;
