@@ -1,0 +1,48 @@
+{%- comment -%}
+  Release 22 (R22-101, R22-102): RankPilot FAQ app block for the product template.
+  Reads RankPilot's own product metafield ($app namespace, key "faqs"), so there is no namespace
+  setting. Outputs the questions as expandable rows and exactly one FAQPage in the page HTML,
+  generated in Liquid so search and AI crawlers that do not run JavaScript can read it.
+  Renders nothing (no empty heading) when the product has no RankPilot FAQs.
+{%- endcomment -%}
+{%- assign rp_faqs = product.metafields['$app'].faqs.value -%}
+{%- assign rp_count = 0 -%}
+{%- for faq in rp_faqs -%}{%- if faq.question != blank and faq.answer != blank -%}{%- assign rp_count = rp_count | plus: 1 -%}{%- endif -%}{%- endfor -%}
+{%- if product and rp_count > 0 -%}
+<section class="rankpilot-faq" id="rankpilot-faq-{{ block.id }}" data-rankpilot-faq="{{ rp_count }}" aria-labelledby="rankpilot-faq-heading-{{ block.id }}"
+  style="{% if block.settings.text_colour != blank %}color:{{ block.settings.text_colour }};{% endif %}{% if block.settings.background_colour != blank %}background:{{ block.settings.background_colour }};padding:16px;{% endif %}margin:24px 0">
+  {%- if block.settings.heading != blank -%}
+  <h2 id="rankpilot-faq-heading-{{ block.id }}" class="rankpilot-faq__heading">{{ block.settings.heading | escape }}</h2>
+  {%- endif -%}
+  {%- assign rp_first = true -%}
+  {%- for faq in rp_faqs -%}
+    {%- if faq.question != blank and faq.answer != blank -%}
+    <details class="rankpilot-faq__item" {% if rp_first and block.settings.open_first %}open{% endif %} style="border-top:1px solid rgba(0,0,0,.12);padding:12px 0">
+      <summary style="cursor:pointer;font-weight:600">{{ faq.question | escape }}</summary>
+      <div class="rankpilot-faq__answer" style="margin-top:8px">{{ faq.answer | escape | newline_to_br }}</div>
+    </details>
+    {%- assign rp_first = false -%}
+    {%- endif -%}
+  {%- endfor -%}
+</section>
+<script type="application/ld+json" data-rankpilot-faq-schema>
+{"@context":"https://schema.org","@type":"FAQPage","@id":{{ canonical_url | append: '#faq' | json }},"mainEntity":[
+{%- assign rp_sep = '' -%}
+{%- for faq in rp_faqs -%}{%- if faq.question != blank and faq.answer != blank -%}{{ rp_sep }}{"@type":"Question","name":{{ faq.question | json | replace: '</', '<\/' }},"acceptedAnswer":{"@type":"Answer","text":{{ faq.answer | json | replace: '</', '<\/' }}}}{%- assign rp_sep = ',' -%}{%- endif -%}{%- endfor -%}
+]}
+</script>
+{%- endif -%}
+{% schema %}
+{
+  "name": "RankPilot FAQ",
+  "target": "section",
+  "enabled_on": { "templates": ["product"] },
+  "settings": [
+    { "type": "text", "id": "heading", "label": "Heading", "default": "Product questions" },
+    { "type": "checkbox", "id": "open_first", "label": "Open the first question", "default": true },
+    { "type": "paragraph", "content": "Colours follow the section's colour scheme. Set these only to override it." },
+    { "type": "color", "id": "text_colour", "label": "Text colour" },
+    { "type": "color", "id": "background_colour", "label": "Background colour" }
+  ]
+}
+{% endschema %}
