@@ -120,9 +120,15 @@ export function relevantQuestions(p:Payload){
 /** Release 22 (R22-601): for tents and other camping gear, "fit" means the packed size, not clothing fit. */
 export const fitQuestion=(p:Payload)=>CAMP_GEAR.test(`${p.productType||''} ${p.title||''}`)?'What is the packed size?':'Will it fit in my van?';
 /** Text a shopper can read on the page: description, FAQs and the variant options they choose from. */
+/**
+ * Release 22 fix: page text with a space after each block element. Cheerio's text() runs list items and
+ * paragraphs together ("…importantWhat's included: one rug"), so word-boundary checks missed answers in
+ * spec lists and FAQ blocks and answer readiness read far too low.
+ */
+export const blockText=(html:string)=>load(`<div>${(html||'').replace(/<\/(p|li|h[1-6]|dd|dt|td|th|div|tr|blockquote)>/gi,'</$1> ').replace(/<br\s*\/?>/gi,' ')}</div>`,null,false).root().text();
 export function shopperText(p:Payload,opts:{faqs?:boolean}={}){
  const options=(p.variants||[]).flatMap(v=>(v.selectedOptions||[]).map(o=>`${o.name}: ${o.value}`));
- return load(`<div>${p.descriptionHtml||''}</div>`,null,false).root().text()+'\n'+(opts.faqs===false?'':(p.faqs||[]).map(f=>`${f.question} ${f.answer}`).join('\n'))+'\n'+[...new Set(options)].join('\n');
+ return blockText(p.descriptionHtml||'')+'\n'+(opts.faqs===false?'':(p.faqs||[]).map(f=>`${f.question} ${f.answer}`).join('\n'))+'\n'+[...new Set(options)].join('\n');
 }
 // Release 22 (R22-602): RankPilot FAQ answers count once they are live on the page (faqLive), not while "Saved, not live".
 export function answeredQuestions(p:Payload,facts:Facts,opts:{deliveryPolicy?:boolean;faqLive?:boolean}={}):Record<AnswerKey,boolean>{
