@@ -14,9 +14,10 @@ export type RuleOptions={allow?:Iterable<string>;brands?:string[];productTitle?:
 /** Words allowed in capitals for one product: its vendor and title words, plus the merchant's allowlist. */
 export function allowedCaps(...sources:(string|string[]|undefined)[]){const out=new Set<string>();for(const src of sources)for(const w of [src||''].flat().join(' ').split(/[^A-Za-z0-9+-]+/))if(w)out.add(w.toUpperCase());return out;}
 const US_SPELLINGS:[RegExp,string][]=[[/\bcolou?r(s|ed|ful)?\b/gi,'colour'],[/\borganiz(e|es|ed|ing|er|ers|ation)\b/gi,'organise'],[/\bgray\b/gi,'grey'],[/\baluminum\b/gi,'aluminium'],[/\bcenter(s|ed)?\b/gi,'centre'],[/\bfavorite(s)?\b/gi,'favourite']];
-export const plain=(value:string)=>/<[a-z][\s\S]*>/i.test(value)?load(`<div>${value}</div>`,null,false).root().text():value;
+export const plain=(value:string)=>/<[a-z][\s\S]*>/i.test(value)?load(`<div>${value.replace(/<\/(p|li|h[1-6]|dd|dt|td|th|div|tr|blockquote)>/gi,'</$1> ').replace(/<br\s*\/?>/gi,' ')}</div>`,null,false).root().text():value;
 const METRIC_NEAR=/\d\s?(?:mm|cm|m|km|kg|g|ml|l|litres?|liters?)\b/i;
-const IMPERIAL=/(\d[\d.,/]*(?:\s?(?:to|-|–|x|×|by)\s?\d[\d.,/]*)*)\s?(inches|inch|in\b(?!\s+(?:a|an|the|one|two|three|stock|use|total|each|your|our|this|that|it|place|store|colours?|sizes?)\b)|"|”|″|lbs?\b|fl\.?\s?oz\b|oz\b|ft\b|feet\b|foot\b)/gi;
+// Release 22 fix: a number glued to letters is a model code ("KBS08 in blue"), not a measurement.
+const IMPERIAL=/(?<![A-Za-z\d.,/])(\d[\d.,/]*(?:\s?(?:to|-|–|x|×|by)\s?\d[\d.,/]*)*)\s?(inches|inch|in\b(?!\s+(?:a|an|the|one|two|three|stock|use|total|each|your|our|this|that|it|place|store|colours?|sizes?)\b)|"|”|″|lbs?\b|fl\.?\s?oz\b|oz\b|ft\b|feet\b|foot\b)/gi;
 /**
  * Release 20 (RP-502): metric wording for an imperial measurement, e.g. "17 to 22 inches" → "43 to 56 cm".
  * Release 22 (R22-302): ounces are converted by what they measure. A flask's "16oz" is a volume
