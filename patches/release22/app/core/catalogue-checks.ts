@@ -82,7 +82,8 @@ const PATTERNS:Record<AnswerKey,RegExp>={
  material:/\b(?:made (?:from|of|with)|material|fabric|cotton|linen|wool|polyester|nylon|canvas|leather|seagrass|rattan|jute|bamboo|wood(?:en)?|oak|pine|teak|acacia|steel|aluminium|enamel|ceramic|stoneware|porcelain|glass|silicone|plastic|polypropylene|fleece|flannel|(?:duck|goose) down|down[- ]filled|velvet|marble|resin)\b/i,
  included:/\b(?:what'?s included|what is included|includes?\b|comes with|in the box|supplied with|set of \d+|pack of \d+|\d+\s?x\s?[a-z])/i,
  weight:/\b\d+(?:[.,]\d+)?\s?(?:kg|g|grams?|kilograms?)\b|\bweighs?\b[^.]{0,30}\d/i,
- care:/\b(?:(?:machine |hand )?wash(?:able|ing)?|wipe (?:clean|down|dry)|clean (?:with|using|by)|cleaning|care (?:instructions|guide|label)|to care for|dry clean|tumble|dishwasher|oil(?:ing)? (?:the|it)|maintenance)\b/i,
+ // A spec line labelled "Care:" answers the question whatever verb follows it ("Care: rinse and dry").
+ care:/\b(?:(?:machine |hand )?wash(?:able|ing)?|wipe(?:-clean| (?:clean|down|dry|with|over|inside))|clean (?:with|using|by)|cleaning|spot[- ]clean|rinse|care (?:instructions|guide|label)|to care for|dry clean|tumble|dishwasher|oil(?:ing)? (?:the|it)|maintenance)\b|(?:^|[\n.;]\s*|\s)care\s*:/i,
  fit:/\b(?:fits?|fitting|locker|shelf|shelves|cupboard|under[- ]bed|under[- ]seat|campervan|motorhome|in the van|in your van|caravan|small spaces?|stows?|packs? (?:flat|down|small|away)|pack(?:ed)? size|folded size|folds? (?:down|flat) to)\b/i,
  power:/\b(?:batter(?:y|ies)|mains|plug[- ]in|usb(?:[- ]?c)?|rechargeable|12\s?v|230\s?v|240\s?v|aaa?\b|solar|hard[- ]?wired|powered by|power supply)\b/i,
  lifespan:/\b(?:(?:battery|sensor|alarm) life|lifespan|life of \d+|\d+[- ]?(?:year|yr)s?\s+(?:sealed\s+)?(?:battery|sensor|life)|lasts? (?:up to )?\d+\s?(?:years?|hours?|hrs?)|replace (?:it |the alarm )?(?:after|every) \d+)\b/i,

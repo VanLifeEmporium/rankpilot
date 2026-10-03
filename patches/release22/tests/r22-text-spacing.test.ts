@@ -28,3 +28,17 @@ describe("Release 22 fix: model codes are not imperial units", () => {
     expect(units).toEqual(["17 inches → 43 cm", "25ft → 7.6 m", "16oz → 470 ml"]);
   });
 });
+
+describe("Release 22 fix: a labelled care line answers the care question", () => {
+  it.each([
+    "Care: rinse with warm water and dry",
+    "Care: wipe with a damp cloth and dry",
+    "Care: dust with a dry cloth",
+    "Care: store in a dry place",
+  ])("counts %s", (line) => {
+    expect(answeredQuestions(page(`<ul><li>Material: oak</li><li>${line}</li></ul>`), {}).care).toBe(true);
+  });
+  it("does not count a page with no care advice", () => {
+    expect(answeredQuestions(page("<ul><li>Material: oak</li><li>Size: 30 x 20 cm</li></ul>"), {}).care).toBe(false);
+  });
+});
